@@ -1,0 +1,3 @@
+[submodule "librapid"]
+	path = librapid
+	url = https://github.com/librapid/librapid

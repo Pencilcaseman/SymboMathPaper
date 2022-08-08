@@ -7,7 +7,11 @@
 
 namespace lrc = librapid;
 
+using Scalar = lrc::mpfr; // Type used in all calculations
 inline constexpr int64_t formatWidth = 15;
+
+static inline constexpr uint64_t TYPE_VARIABLE = 1ULL << 63;
+static inline constexpr uint64_t TYPE_OPERATOR = 1ULL << 62;
 
 // Tokens
 static inline constexpr uint64_t TYPE_DIGIT	 = 1ULL << 0;
@@ -22,26 +26,38 @@ static inline constexpr uint64_t TYPE_RPAREN = 1ULL << 8;
 static inline constexpr uint64_t TYPE_POINT	 = 1ULL << 9;
 
 // High-level types
-static inline constexpr uint64_t TYPE_NUMBER = 1ULL << 10;
-static inline constexpr uint64_t TYPE_STRING = 1ULL << 11;
+static inline constexpr uint64_t TYPE_NUMBER   = 1ULL << 10;
+static inline constexpr uint64_t TYPE_STRING   = 1ULL << 11;
+static inline constexpr uint64_t TYPE_FUNCTION = 1ULL << 12;
 
-std::string tokenToString(const uint64_t tok) {
-	// Instead of bit-wise checks, ensure there are no other bits set
-	// by subtracting and comparing to zero
-	if (!tok) return "NONE";
-	if (!(tok - TYPE_DIGIT)) return "DIGIT";
-	if (!(tok - TYPE_CHAR)) return "CHAR";
-	if (!(tok - TYPE_ADD)) return "ADD";
-	if (!(tok - TYPE_SUB)) return "SUB";
-	if (!(tok - TYPE_MUL)) return "MUL";
-	if (!(tok - TYPE_DIV)) return "DIV";
-	if (!(tok - TYPE_CARET)) return "CARET";
-	if (!(tok - TYPE_LPAREN)) return "LPAREN";
-	if (!(tok - TYPE_RPAREN)) return "RPAREN";
-	if (!(tok - TYPE_POINT)) return "POINT";
-	if (!(tok - TYPE_NUMBER)) return "NUMBER";
-	if (!(tok - TYPE_STRING)) return "STRING";
+std::string tokenToString(uint64_t tok) {
+	// Remove high-level specifiers
+	tok &= ~TYPE_VARIABLE;
+	tok &= ~TYPE_OPERATOR;
+
+	if (!tok || tok == (uint64_t)-1) return "NONE";
+	if (tok & TYPE_DIGIT) return "DIGIT";
+	if (tok & TYPE_CHAR) return "CHAR";
+	if (tok & TYPE_ADD) return "ADD";
+	if (tok & TYPE_SUB) return "SUB";
+	if (tok & TYPE_MUL) return "MUL";
+	if (tok & TYPE_DIV) return "DIV";
+	if (tok & TYPE_CARET) return "CARET";
+	if (tok & TYPE_LPAREN) return "LPAREN";
+	if (tok & TYPE_RPAREN) return "RPAREN";
+	if (tok & TYPE_POINT) return "POINT";
+	if (tok & TYPE_NUMBER) return "NUMBER";
+	if (tok & TYPE_FUNCTION) return "FUNCTION"; // Check this before STRING
+	if (tok & TYPE_STRING) return "STRING";
 	return "UNKNOWN";
+}
+
+int64_t precedence(const uint64_t type) {
+	if (type & TYPE_ADD || type & TYPE_SUB) return 1;
+	if (type & TYPE_MUL || type & TYPE_DIV) return 2;
+	if (type & TYPE_CARET) return 3;
+	if (type & TYPE_FUNCTION) return 4;
+	return 0;
 }
 
 /**
@@ -52,10 +68,11 @@ class Component {
 public:
 	Component() = default;
 
-	LR_NODISCARD("") virtual double eval() const {
+	LR_NODISCARD("") virtual Scalar eval() const {
 		LR_ASSERT(false,
 				  "{} object cannot be evaluated (numerically) directly",
 				  type());
+		return 0;
 	}
 
 	LR_NODISCARD("")
@@ -77,6 +94,10 @@ public:
 
 	LR_NODISCARD("") virtual std::string str(uint64_t indent) const {
 		return fmt::format("{: >{}}{}", "", indent, "NONE");
+	}
+
+	LR_NODISCARD("") virtual std::string name() const {
+		return "BUILT_IN_COMPONENT_TYPE";
 	}
 
 	LR_NODISCARD("")
@@ -101,18 +122,26 @@ private:
 class Number : public Component {
 public:
 	Number() : Component() {}
-	explicit Number(double value) : Component(), m_value(value) {}
+	explicit Number(const Scalar &value) : Component(), m_value(value) {}
 
-	LR_NODISCARD("") double eval() const override { return m_value; }
+	explicit Number(const std::string &value) : Component() {
+		scn::scan(value, "{}", m_value);
+	}
+
+	LR_NODISCARD("") Scalar eval() const override { return m_value; }
 
 	LR_NODISCARD("") std::string str(uint64_t indent) const override {
 		return fmt::format("{: >{}}{}", "", indent, m_value);
 	}
 
+	LR_NODISCARD("") std::string name() const override {
+		return "BUILT_IN_NUMBER_TYPE";
+	}
+
 	LR_NODISCARD("") std::string type() const override { return "NUMBER"; }
 
 private:
-	double m_value = 0;
+	Scalar m_value = 0;
 };
 
 class Variable : public Component {
@@ -125,6 +154,8 @@ public:
 		return m_name;
 	}
 
+	LR_NODISCARD("") std::string name() const override { return m_name; }
+
 	LR_NODISCARD("") std::string type() const override { return "VARIABLE"; }
 
 private:
@@ -134,6 +165,8 @@ private:
 class Tree : public Component {
 public:
 	Tree() : Component() {}
+
+	LR_NODISCARD("") Scalar eval() const override { return m_tree[0]->eval(); }
 
 	LR_NODISCARD("")
 	const std::vector<std::shared_ptr<Component>> &tree() const override {
@@ -161,6 +194,10 @@ public:
 		return res;
 	}
 
+	LR_NODISCARD("") virtual std::string name() const {
+		return "BUILT_IN_TREE_TYPE";
+	}
+
 	LR_NODISCARD("") std::string type() const override { return "TREE"; }
 
 private:
@@ -171,13 +208,23 @@ class Function : public Component {
 public:
 	Function() : Component() {}
 
+	Function(const Function &other) = default;
+
 	explicit Function(
 	  std::string name, std::string format,
-	  std::function<double(const std::vector<double> &)> functor,
-	  std::vector<std::shared_ptr<Component>> values) :
+	  std::function<Scalar(const std::vector<Scalar> &)> functor,
+	  uint64_t numOperands,
+	  std::vector<std::shared_ptr<Component>> values = {}) :
 			Component(),
 			m_name(std::move(name)), m_format(std::move(format)),
-			m_functor(std::move(functor)), m_values(std::move(values)) {}
+			m_functor(std::move(functor)), m_numOperands(numOperands),
+			m_values(std::move(values)) {}
+
+	LR_NODISCARD("") Scalar eval() const override {
+		std::vector<Scalar> operands;
+		for (const auto &val : m_values) operands.push_back(val->eval());
+		return m_functor(operands);
+	}
 
 	LR_NODISCARD("") std::string str(uint64_t indent) const override {
 		return fmt::format("{: >{}}{}", "", indent, m_name);
@@ -208,15 +255,38 @@ public:
 		return res;
 	}
 
+	LR_NODISCARD("") uint64_t numOperands() const { return m_numOperands; }
+
+	LR_NODISCARD("") auto values() const { return m_values; }
+
+	void addValue(const std::shared_ptr<Component> &value) {
+		m_values.push_back(value);
+	}
+
+	LR_NODISCARD("") std::string name() const override { return m_name; }
+
 	LR_NODISCARD("") std::string type() const override { return "FUNCTION"; }
+
+	LR_NODISCARD("") std::string format() const { return m_format; }
 
 private:
 	std::string m_name	 = "NULLOP";
 	std::string m_format = "NULLOP";
-	std::function<double(const std::vector<double> &)> m_functor;
+	std::function<Scalar(const std::vector<Scalar> &)> m_functor;
+	uint64_t m_numOperands = 0;
 
 	std::vector<std::shared_ptr<Component>> m_values = {};
 };
+
+// Registered functions
+static inline std::vector<std::shared_ptr<Function>> functions;
+
+auto findFunction(const std::string &name) {
+	// This should probably be a hash-map
+	return std::find_if(functions.begin(),
+						functions.end(),
+						[&](const auto &val) { return val->name() == name; });
+}
 
 struct Token {
 	uint64_t type;
@@ -248,15 +318,15 @@ std::vector<Token> tokenize(const std::string &input) {
 		else if (('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'))
 			res.emplace_back(Token {TYPE_CHAR, c});
 		else if (c == '+')
-			res.emplace_back(Token {TYPE_ADD, c});
+			res.emplace_back(Token {TYPE_ADD | TYPE_OPERATOR, c});
 		else if (c == '-')
-			res.emplace_back(Token {TYPE_SUB, c});
+			res.emplace_back(Token {TYPE_SUB | TYPE_OPERATOR, c});
 		else if (c == '*')
-			res.emplace_back(Token {TYPE_MUL, c});
+			res.emplace_back(Token {TYPE_MUL | TYPE_OPERATOR, c});
 		else if (c == '/')
-			res.emplace_back(Token {TYPE_DIV, c});
+			res.emplace_back(Token {TYPE_DIV | TYPE_OPERATOR, c});
 		else if (c == '^')
-			res.emplace_back(Token {TYPE_CARET, c});
+			res.emplace_back(Token {TYPE_CARET | TYPE_OPERATOR, c});
 		else if (c == '(')
 			res.emplace_back(Token {TYPE_LPAREN, c});
 		else if (c == ')')
@@ -297,7 +367,7 @@ std::vector<Lexed> lexer(const std::vector<Token> &tokens) {
 
 	// Valid next characters that would continue the string
 	uint64_t validNext;
-	uint64_t type;
+	uint64_t type = -1;
 
 	// Iterate over all tokens, "eating" them to form a list of lexed objects
 	auto it = tokens.begin();
@@ -318,13 +388,13 @@ std::vector<Lexed> lexer(const std::vector<Token> &tokens) {
 
 		if (it->type & TYPE_DIGIT) {
 			validNext = TYPE_DIGIT | TYPE_POINT;
-			type	  = TYPE_NUMBER;
+			type	  = TYPE_NUMBER | TYPE_VARIABLE;
 		} else if (it->type & TYPE_POINT) {
 			validNext = TYPE_DIGIT;
-			type	  = TYPE_NUMBER;
+			type	  = TYPE_NUMBER | TYPE_VARIABLE;
 		} else if (it->type & TYPE_CHAR) {
 			validNext = TYPE_CHAR;
-			type	  = TYPE_STRING;
+			type	  = TYPE_STRING | TYPE_VARIABLE;
 		} else {
 			validNext = 0;
 			type	  = it->type;
@@ -340,47 +410,246 @@ std::vector<Lexed> lexer(const std::vector<Token> &tokens) {
 	return res;
 }
 
-std::shared_ptr<Tree> parse(const std::vector<Lexed> &lexed) {
+std::vector<Lexed> process(const std::vector<Lexed> &lexed) {
 	/*
-	 * Grammar:
+	 * Apply certain rules:
 	 *
-	 * <term> ::= 
+	 * <number> <lparen> ::= <number> "*" <lparen>
+	 * <number> <string> ::= <number> "*" <string>
 	 */
+
+	std::vector<Lexed> res;
+
+	for (auto it = lexed.begin(); it != lexed.end() - 1; ++it) {
+		if (it->type & TYPE_NUMBER && (it + 1)->type & TYPE_LPAREN) {
+			res.emplace_back(*it);
+			res.emplace_back(Lexed {TYPE_MUL, "*"});
+		} else if (it->type & TYPE_STRING && (it + 1)->type & TYPE_LPAREN) {
+			// Check the value is not a function
+			if (std::find_if(
+				  functions.begin(), functions.end(), [&](const auto &f) {
+					  return f->name() == it->val;
+				  }) == functions.end()) {
+				res.emplace_back(*it);
+				res.emplace_back(Lexed {TYPE_MUL, "*"});
+			} else {
+				// It's a function, so mark it as such
+				res.emplace_back(Lexed {it->type | TYPE_FUNCTION, it->val});
+			}
+		} else {
+			res.emplace_back(*it);
+		}
+	}
+
+	res.emplace_back(lexed.back());
+
+	return res;
+}
+
+std::vector<Lexed> toPostfix(const std::vector<Lexed> &processed) {
+	std::vector<Lexed> postfix;
+	std::vector<Lexed> stack;
+
+	for (auto lex = processed.begin(); lex != processed.end(); ++lex) {
+		if (lex->type & TYPE_VARIABLE) { // Number or string
+			postfix.emplace_back(*lex);
+		} else if (lex->type & (TYPE_OPERATOR | TYPE_FUNCTION)) {
+			// Pop operators with higher precedence than the current one
+			while (!stack.empty() &&
+				   precedence(stack.back().type) >= precedence(lex->type)) {
+				postfix.emplace_back(stack.back());
+				stack.pop_back();
+			}
+
+			// Push the current operator onto the stack
+			stack.emplace_back(*lex);
+		} else if (lex->type & TYPE_LPAREN) {
+			stack.emplace_back(*lex);
+		} else if (lex->type & TYPE_RPAREN) {
+			// Pop all operators until the matching LPAREN
+			while (stack.back().type != TYPE_LPAREN) {
+				postfix.emplace_back(stack.back());
+				stack.pop_back();
+			}
+			// Remove the LPAREN
+			stack.pop_back();
+		}
+	}
+
+	// Pop the remaining operators on the stack
+	while (!stack.empty()) {
+		postfix.emplace_back(stack.back());
+		stack.pop_back();
+	}
+
+	return postfix;
+}
+
+std::vector<std::shared_ptr<Component>>
+parse(const std::vector<Lexed> &postfix) {
+	// Convert all lexed objects in postfix into value types
+	std::vector<std::shared_ptr<Component>> res;
+
+	for (const auto &lex : postfix) {
+		if (lex.type & TYPE_NUMBER) {
+			res.emplace_back(std::make_shared<Number>(lex.val));
+		} else if (lex.type & TYPE_STRING) {
+			// Check for a function
+			auto func = findFunction(lex.val);
+			if (func != functions.end()) {
+				// Function was found, add it to result
+				res.emplace_back(*func);
+			} else {
+				// Not a function. Use as a variable
+				res.emplace_back(std::make_shared<Variable>(lex.val));
+			}
+		} else if (lex.type & TYPE_OPERATOR) {
+			// Operators are just special functions
+			auto func = findFunction("_");
+			if (lex.type & TYPE_ADD) func = findFunction("ADD");
+			if (lex.type & TYPE_SUB) func = findFunction("SUB");
+			if (lex.type & TYPE_MUL) func = findFunction("MUL");
+			if (lex.type & TYPE_DIV) func = findFunction("DIV");
+			if (lex.type & TYPE_CARET) func = findFunction("POW");
+
+			LR_ASSERT(func != functions.end(), "Operator not found");
+
+			res.emplace_back(*func);
+		}
+	}
+
+	return res;
+}
+
+std::shared_ptr<Tree>
+genTree(const std::vector<std::shared_ptr<Component>> &values) {
+	// Construct a tree from the processed list
+	auto res = std::make_shared<Tree>();
+	std::vector<std::shared_ptr<Component>> stack;
+
+	for (const auto &lex : values) {
+		if (lex->type() == "NUMBER") {
+			stack.emplace_back(lex);
+		} else if (lex->type() == "FUNCTION") {
+			// Pop off the two top-most elements
+			auto right = stack.back();
+			stack.pop_back();
+			auto left = stack.back();
+			stack.pop_back();
+
+			// Function is valid -- clone it
+			auto node = std::make_shared<Function>(
+			  *std::dynamic_pointer_cast<Function>(lex));
+			node->addValue(left);
+			node->addValue(right);
+
+			// Push the node back onto the stack
+			stack.emplace_back(node);
+		}
+	}
+
+	// Push the result to the tree
+	res->tree().emplace_back(stack.back());
+
+	return res;
+}
+
+void registerFunctions() {
+	// Add the addition operator
+	functions.emplace_back(std::make_shared<Function>(
+	  "ADD",
+	  "{} + {}",
+	  [](const std::vector<Scalar> &args) { return args[0] + args[1]; },
+	  2));
+
+	// Add the subtraction operator
+	functions.emplace_back(std::make_shared<Function>(
+	  "SUB",
+	  "{} - {}",
+	  [](const std::vector<Scalar> &args) { return args[0] - args[1]; },
+	  2));
+
+	// Add the multiplication operator
+	functions.emplace_back(std::make_shared<Function>(
+	  "MUL",
+	  "{} * {}",
+	  [](const std::vector<Scalar> &args) { return args[0] * args[1]; },
+	  2));
+
+	// Add the division operator
+	functions.emplace_back(std::make_shared<Function>(
+	  "DIV",
+	  "{} / {}",
+	  [](const std::vector<Scalar> &args) { return args[0] / args[1]; },
+	  2));
+
+	// Add the exponentiation operator
+	functions.emplace_back(std::make_shared<Function>(
+	  "POW",
+	  "{} ^ {}",
+	  [](const std::vector<Scalar> &args) {
+		  return lrc::pow(args[0], args[1]);
+	  },
+	  2));
+
+	// Add the function sin(x)
+	functions.emplace_back(std::make_shared<Function>(
+	  "sin",
+	  "sin({})",
+	  [](const std::vector<Scalar> &args) { return lrc::sin(args[0]); },
+	  2));
+}
+
+std::string prettyPrint(const std::shared_ptr<Component> &object) {
+	if (object->type() == "NUMBER")
+		return lrc::str(std::dynamic_pointer_cast<Number>(object)->eval());
+
+	if (object->type() == "VARIABLE")
+		return std::dynamic_pointer_cast<Variable>(object)->name();
+
+	if (object->type() == "FUNCTION") {
+		auto func	= std::dynamic_pointer_cast<Function>(object);
+		auto format = func->format();
+	}
+}
+
+Scalar eval(const std::shared_ptr<Tree> &tree) {
+	// Numerically evaluate the tree
+	return tree->eval();
 }
 
 int main() {
-	fmt::print("Hello, World\n");
+	lrc::prec(50);
 
-	auto tree = std::make_shared<Tree>();
+	registerFunctions();
 
-	auto node1 = std::make_shared<Function>(
-	  "ADD",
-	  "{} + {}",
-	  [](const std::vector<double> &args) { return args[0] + args[1]; },
-	  std::vector<std::shared_ptr<Component>> {
-		std::make_shared<Number>(123), std::make_shared<Variable>("x")});
+	std::string equation =
+	  "(1 / ((1 + 2) ^ (3 * 4))) ^ (1 / ((1 + 2) ^ (3 * 4)))";
 
-	auto node2 = std::make_shared<Function>(
-	  "ADD",
-	  "{} + {}",
-	  [](const std::vector<double> &args) { return args[0] + args[1]; },
-	  std::vector<std::shared_ptr<Component>> {
-		std::make_shared<Number>(456), std::make_shared<Variable>("y")});
-
-	tree->tree().emplace_back(node1);
-	tree->tree().emplace_back(node2);
+	auto tokenized = tokenize(equation);
+	auto lexed	   = lexer(tokenized);
+	auto processed = process(lexed);
+	auto postfix   = toPostfix(processed);
+	auto parsed	   = parse(postfix);
+	auto tree	   = genTree(parsed);
 
 	fmt::print("{}\n", tree->str(0));
 
-	// for (const auto &val : tokenize("123.456 + xyz")) {
-	// 	fmt::print("[ {:^6} ] {}\n", tokenToString(val.type), val.val);
-	// }
+	fmt::print("Numeric result: {}\n", lrc::str(eval(tree)));
 
-	fmt::print("\n\n\n");
-
-	for (const auto &val : lexer(tokenize("1 + 2 * (3 + 4) ^ 5"))) {
-		fmt::print("[ {:^6} ] {}\n", tokenToString(val.type), val.val);
-	}
+	lrc::timeFunction(
+	  [&]() {
+		  auto tokenized = tokenize(equation);
+		  auto lexed	 = lexer(tokenized);
+		  auto processed = process(lexed);
+		  auto postfix	 = toPostfix(processed);
+		  auto parsed	 = parse(postfix);
+		  auto tree		 = genTree(parsed);
+		  auto res		 = eval(tree);
+	  },
+	  -1,
+	  -1,
+	  10);
 
 	return 0;
 }

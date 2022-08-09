@@ -7,7 +7,7 @@
 
 namespace lrc = librapid;
 
-using Scalar = lrc::mpfr; // Type used in all calculations
+using Scalar = double; // lrc::mpfr; // Type used in all calculations
 inline constexpr int64_t formatWidth = 15;
 
 static inline constexpr uint64_t TYPE_VARIABLE = 1ULL << 63;
@@ -423,7 +423,7 @@ std::vector<Lexed> process(const std::vector<Lexed> &lexed) {
 	for (auto it = lexed.begin(); it != lexed.end() - 1; ++it) {
 		if (it->type & TYPE_NUMBER && (it + 1)->type & TYPE_LPAREN) {
 			res.emplace_back(*it);
-			res.emplace_back(Lexed {TYPE_MUL, "*"});
+			res.emplace_back(Lexed {TYPE_MUL | TYPE_OPERATOR, "*"});
 		} else if (it->type & TYPE_STRING && (it + 1)->type & TYPE_LPAREN) {
 			// Check the value is not a function
 			if (std::find_if(
@@ -431,7 +431,7 @@ std::vector<Lexed> process(const std::vector<Lexed> &lexed) {
 					  return f->name() == it->val;
 				  }) == functions.end()) {
 				res.emplace_back(*it);
-				res.emplace_back(Lexed {TYPE_MUL, "*"});
+				res.emplace_back(Lexed {TYPE_MUL | TYPE_OPERATOR, "*"});
 			} else {
 				// It's a function, so mark it as such
 				res.emplace_back(Lexed {it->type | TYPE_FUNCTION, it->val});
@@ -531,17 +531,20 @@ genTree(const std::vector<std::shared_ptr<Component>> &values) {
 		if (lex->type() == "NUMBER") {
 			stack.emplace_back(lex);
 		} else if (lex->type() == "FUNCTION") {
-			// Pop off the two top-most elements
-			auto right = stack.back();
-			stack.pop_back();
-			auto left = stack.back();
-			stack.pop_back();
+			auto funcCast = std::dynamic_pointer_cast<Function>(lex);
+			std::vector<std::shared_ptr<Component>> args;
+			for (uint64_t i = 0; i < funcCast->numOperands(); ++i) {
+				args.emplace_back(stack.back());
+				stack.pop_back();
+			}
 
 			// Function is valid -- clone it
 			auto node = std::make_shared<Function>(
 			  *std::dynamic_pointer_cast<Function>(lex));
-			node->addValue(left);
-			node->addValue(right);
+
+			for (auto it = args.rbegin(); it != args.rend(); ++it) {
+				node->addValue(*it);
+			}
 
 			// Push the node back onto the stack
 			stack.emplace_back(node);
@@ -611,6 +614,8 @@ std::string prettyPrint(const std::shared_ptr<Component> &object) {
 		auto func	= std::dynamic_pointer_cast<Function>(object);
 		auto format = func->format();
 	}
+
+	return "";
 }
 
 Scalar eval(const std::shared_ptr<Tree> &tree) {
@@ -623,8 +628,7 @@ int main() {
 
 	registerFunctions();
 
-	std::string equation =
-	  "(1 / ((1 + 2) ^ (3 * 4))) ^ (1 / ((1 + 2) ^ (3 * 4)))";
+	std::string equation = "((((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) ^ (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) + (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) ^ (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))))) / ((((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) ^ (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) + (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) ^ (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))))";
 
 	auto tokenized = tokenize(equation);
 	auto lexed	   = lexer(tokenized);
@@ -633,23 +637,12 @@ int main() {
 	auto parsed	   = parse(postfix);
 	auto tree	   = genTree(parsed);
 
-	fmt::print("{}\n", tree->str(0));
+	// for (const auto &val : parse) { fmt::print("{}\n", val.val); }
 
+	fmt::print("{}\n", tree->str(0));
 	fmt::print("Numeric result: {}\n", lrc::str(eval(tree)));
 
-	lrc::timeFunction(
-	  [&]() {
-		  auto tokenized = tokenize(equation);
-		  auto lexed	 = lexer(tokenized);
-		  auto processed = process(lexed);
-		  auto postfix	 = toPostfix(processed);
-		  auto parsed	 = parse(postfix);
-		  auto tree		 = genTree(parsed);
-		  auto res		 = eval(tree);
-	  },
-	  -1,
-	  -1,
-	  10);
+	lrc::timeFunction([&]() { auto res = eval(tree); }, -1, -1, 10);
 
 	return 0;
 }

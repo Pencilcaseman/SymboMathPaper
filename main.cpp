@@ -30,6 +30,9 @@ static inline constexpr uint64_t TYPE_NUMBER   = 1ULL << 10;
 static inline constexpr uint64_t TYPE_STRING   = 1ULL << 11;
 static inline constexpr uint64_t TYPE_FUNCTION = 1ULL << 12;
 
+// Object Statuses
+static inline constexpr uint64_t STATUS_MOVED = 1ULL << 32;
+
 std::string tokenToString(uint64_t tok) {
 	// Remove high-level specifiers
 	tok &= ~TYPE_VARIABLE;
@@ -418,30 +421,55 @@ std::vector<Lexed> process(const std::vector<Lexed> &lexed) {
 	 * <number> <string> ::= <number> "*" <string>
 	 */
 
+	std::vector<Lexed> tmp(lexed.begin(), lexed.end());
 	std::vector<Lexed> res;
 
-	for (auto it = lexed.begin(); it != lexed.end() - 1; ++it) {
-		if (it->type & TYPE_NUMBER && (it + 1)->type & TYPE_LPAREN) {
-			res.emplace_back(*it);
+	for (int64_t i = 0; i < tmp.size() - 1; ++i) {
+		if (tmp[i].type & TYPE_NUMBER &&
+			tmp[i + 1].type & (TYPE_LPAREN | TYPE_STRING)) {
+			// <number> <lparen>
+			res.emplace_back(tmp[i]);
 			res.emplace_back(Lexed {TYPE_MUL | TYPE_OPERATOR, "*"});
-		} else if (it->type & TYPE_STRING && (it + 1)->type & TYPE_LPAREN) {
+		} else if (tmp[i].type & TYPE_STRING && tmp[i + 1].type & TYPE_LPAREN) {
 			// Check the value is not a function
 			if (std::find_if(
 				  functions.begin(), functions.end(), [&](const auto &f) {
-					  return f->name() == it->val;
+					  return f->name() == tmp[i].val;
 				  }) == functions.end()) {
-				res.emplace_back(*it);
+				res.emplace_back(tmp[i]);
 				res.emplace_back(Lexed {TYPE_MUL | TYPE_OPERATOR, "*"});
 			} else {
-				// It's a function, so mark it as such
-				res.emplace_back(Lexed {it->type | TYPE_FUNCTION, it->val});
+				// It's a function, so mark it as such and move it to the end of
+				// the term
+				if (!(tmp[i].type & STATUS_MOVED)) {
+					int64_t bracketCount = 1;
+					auto tmpIndex		 = i + 1;
+					while (bracketCount > 0) {
+						tmpIndex++;
+						if (tmp[tmpIndex].type & TYPE_LPAREN)
+							++bracketCount;
+						else if (tmp[tmpIndex].type & TYPE_RPAREN)
+							--bracketCount;
+					}
+
+					tmp.insert(
+					  tmp.begin() + tmpIndex + 1, // After bracket
+					  Lexed {tmp[i].type | TYPE_FUNCTION | STATUS_MOVED,
+							 tmp[i].val});
+					tmp.erase(tmp.begin() + i);
+					--i; // Take into account the removed value
+				} else {
+					// Value already moved, so push it back
+					res.emplace_back(
+					  Lexed {tmp[i].type | TYPE_FUNCTION, tmp[i].val});
+				}
 			}
 		} else {
-			res.emplace_back(*it);
+			res.emplace_back(tmp[i]);
 		}
 	}
 
-	res.emplace_back(lexed.back());
+	res.emplace_back(tmp.back());
 
 	return res;
 }
@@ -600,7 +628,42 @@ void registerFunctions() {
 	  "sin",
 	  "sin({})",
 	  [](const std::vector<Scalar> &args) { return lrc::sin(args[0]); },
-	  2));
+	  1));
+
+	// Add the function cos(x)
+	functions.emplace_back(std::make_shared<Function>(
+	  "cos",
+	  "cos({})",
+	  [](const std::vector<Scalar> &args) { return lrc::cos(args[0]); },
+	  1));
+
+	// Add the function tan(x)
+	functions.emplace_back(std::make_shared<Function>(
+	  "tan",
+	  "tan({})",
+	  [](const std::vector<Scalar> &args) { return lrc::tan(args[0]); },
+	  1));
+
+	// Add the function csc(x)
+	functions.emplace_back(std::make_shared<Function>(
+	  "csc",
+	  "csc({})",
+	  [](const std::vector<Scalar> &args) { return lrc::csc(args[0]); },
+	  1));
+
+	// Add the function sec(x)
+	functions.emplace_back(std::make_shared<Function>(
+	  "sec",
+	  "sec({})",
+	  [](const std::vector<Scalar> &args) { return lrc::sec(args[0]); },
+	  1));
+
+	// Add the function cot(x)
+	functions.emplace_back(std::make_shared<Function>(
+	  "cot",
+	  "cot({})",
+	  [](const std::vector<Scalar> &args) { return lrc::cot(args[0]); },
+	  1));
 }
 
 std::string prettyPrint(const std::shared_ptr<Component> &object) {
@@ -628,7 +691,7 @@ int main() {
 
 	registerFunctions();
 
-	std::string equation = "10 + 10";
+	std::string equation = "2cos(2(1/4))";
 
 	auto tokenized = tokenize(equation);
 	auto lexed	   = lexer(tokenized);
@@ -637,11 +700,12 @@ int main() {
 	auto parsed	   = parse(postfix);
 	auto tree	   = genTree(parsed);
 
-	// for (const auto &val : parse) { fmt::print("{}\n", val.val); }
+	// for (const auto &val : postfix) { fmt::print("{}\n", val.val); }
 
 	fmt::print("{}\n", tree->str(0));
 	fmt::print("Numeric result: {}\n", lrc::str(eval(tree)));
 
+	/*
 	fmt::print("Tokenize: ");
 	lrc::timeFunction([&]() { auto res = tokenize(equation); }, -1, -1, 2);
 
@@ -659,6 +723,7 @@ int main() {
 
 	fmt::print("Eval: ");
 	lrc::timeFunction([&]() { auto res = eval(tree); }, -1, -1, 2);
+	 */
 
 	return 0;
 }

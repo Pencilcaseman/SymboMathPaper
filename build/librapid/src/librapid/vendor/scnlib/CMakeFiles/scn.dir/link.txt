@@ -1,2 +1,0 @@
-/usr/bin/ar qc libscn.a  CMakeFiles/scn.dir/src/vscan.cpp.o CMakeFiles/scn.dir/src/locale.cpp.o CMakeFiles/scn.dir/src/reader_float.cpp.o CMakeFiles/scn.dir/src/reader_int.cpp.o CMakeFiles/scn.dir/src/file.cpp.o
-/usr/bin/ranlib libscn.a

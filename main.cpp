@@ -7,7 +7,7 @@
 
 namespace lrc = librapid;
 
-using Scalar = double; // lrc::mpfr; // Type used in all calculations
+using Scalar = lrc::mpfr; // Type used in all calculations
 inline constexpr int64_t formatWidth = 15;
 
 static inline constexpr uint64_t TYPE_VARIABLE = 1ULL << 63;
@@ -624,11 +624,11 @@ Scalar eval(const std::shared_ptr<Tree> &tree) {
 }
 
 int main() {
-	lrc::prec(50);
+	lrc::prec(1000);
 
 	registerFunctions();
 
-	std::string equation = "((((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) ^ (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) + (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) ^ (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))))) / ((((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) ^ (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) + (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))) ^ (((((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) * ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7))) / (((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)) + ((5 ^ 3 - 2 * 0.5) ^ (1 + 2 * 3 - 7)))))";
+	std::string equation = "10 + 10";
 
 	auto tokenized = tokenize(equation);
 	auto lexed	   = lexer(tokenized);
@@ -642,7 +642,23 @@ int main() {
 	fmt::print("{}\n", tree->str(0));
 	fmt::print("Numeric result: {}\n", lrc::str(eval(tree)));
 
-	lrc::timeFunction([&]() { auto res = eval(tree); }, -1, -1, 10);
+	fmt::print("Tokenize: ");
+	lrc::timeFunction([&]() { auto res = tokenize(equation); }, -1, -1, 2);
+
+	fmt::print("Lex: ");
+	lrc::timeFunction([&]() { auto res = lexer(tokenized); }, -1, -1, 2);
+
+	fmt::print("Process: ");
+	lrc::timeFunction([&]() { auto res = process(lexed); }, -1, -1, 2);
+
+	fmt::print("Postfix: ");
+	lrc::timeFunction([&]() { auto res = toPostfix(processed); }, -1, -1, 2);
+
+	fmt::print("Parse: ");
+	lrc::timeFunction([&]() { auto res = parse(postfix); }, -1, -1, 2);
+
+	fmt::print("Eval: ");
+	lrc::timeFunction([&]() { auto res = eval(tree); }, -1, -1, 2);
 
 	return 0;
 }

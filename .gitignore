@@ -35,4 +35,4 @@
 .PVS-Studio
 cmake-build-*
 .idea
-build/
+build

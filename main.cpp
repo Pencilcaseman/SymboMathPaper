@@ -165,48 +165,6 @@ private:
 	std::string m_name = "NONAME";
 };
 
-class Tree : public Component {
-public:
-	Tree() : Component() {}
-
-	LR_NODISCARD("") Scalar eval() const override { return m_tree[0]->eval(); }
-
-	LR_NODISCARD("")
-	const std::vector<std::shared_ptr<Component>> &tree() const override {
-		return m_tree;
-	}
-
-	LR_NODISCARD("") std::vector<std::shared_ptr<Component>> &tree() override {
-		return m_tree;
-	}
-
-	LR_NODISCARD("") std::string str(uint64_t indent) const override {
-		// Format stuff really nicely :)
-		uint64_t longestType = 0, longestValue = 0;
-		for (const auto &val : m_tree) {
-			longestType	 = lrc::max(longestType, val->type().length());
-			longestValue = lrc::max(longestValue, val->str(0).length());
-		}
-
-		std::string res = fmt::format("{: >{}}[ TREE ]", "", indent);
-
-		for (const auto &val : m_tree)
-			res += fmt::format(
-			  "\n{}", val->repr(indent + 4, longestType, longestValue));
-
-		return res;
-	}
-
-	LR_NODISCARD("") virtual std::string name() const {
-		return "BUILT_IN_TREE_TYPE";
-	}
-
-	LR_NODISCARD("") std::string type() const override { return "TREE"; }
-
-private:
-	std::vector<std::shared_ptr<Component>> m_tree;
-};
-
 class Function : public Component {
 public:
 	Function() : Component() {}
@@ -279,6 +237,48 @@ private:
 	uint64_t m_numOperands = 0;
 
 	std::vector<std::shared_ptr<Component>> m_values = {};
+};
+
+class Tree : public Component {
+public:
+	Tree() : Component() {}
+
+	LR_NODISCARD("") Scalar eval() const override { return m_tree[0]->eval(); }
+
+	LR_NODISCARD("")
+	const std::vector<std::shared_ptr<Component>> &tree() const override {
+		return m_tree;
+	}
+
+	LR_NODISCARD("") std::vector<std::shared_ptr<Component>> &tree() override {
+		return m_tree;
+	}
+
+	LR_NODISCARD("") std::string str(uint64_t indent) const override {
+		// Format stuff really nicely :)
+		uint64_t longestType = 0, longestValue = 0;
+		for (const auto &val : m_tree) {
+			longestType	 = lrc::max(longestType, val->type().length());
+			longestValue = lrc::max(longestValue, val->str(0).length());
+		}
+
+		std::string res = fmt::format("{: >{}}[ TREE ]", "", indent);
+
+		for (const auto &val : m_tree)
+			res += fmt::format(
+			  "\n{}", val->repr(indent + 4, longestType, longestValue));
+
+		return res;
+	}
+
+	LR_NODISCARD("") virtual std::string name() const {
+		return "BUILT_IN_TREE_TYPE";
+	}
+
+	LR_NODISCARD("") std::string type() const override { return "TREE"; }
+
+private:
+	std::vector<std::shared_ptr<Component>> m_tree;
 };
 
 // Registered functions
@@ -691,7 +691,7 @@ int main() {
 
 	registerFunctions();
 
-	std::string equation = "2cos(2(1/4))";
+	std::string equation = "sin(22/7)";
 
 	auto tokenized = tokenize(equation);
 	auto lexed	   = lexer(tokenized);

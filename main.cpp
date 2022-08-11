@@ -78,25 +78,8 @@ public:
 		return 0;
 	}
 
-	LR_NODISCARD("")
-	virtual const std::vector<std::shared_ptr<Component>> &tree() const {
-		LR_ASSERT(false,
-				  "Only a value of type Tree is allowed to use this function. "
-				  "Type of *this is {}",
-				  type());
-		return m_tmpTree;
-	}
-
-	LR_NODISCARD("") virtual std::vector<std::shared_ptr<Component>> &tree() {
-		LR_ASSERT(false,
-				  "Only a value of type Tree is allowed to use this function. "
-				  "Type of *this is {}",
-				  type());
-		return m_tmpTree;
-	}
-
 	LR_NODISCARD("") virtual std::string str(uint64_t indent) const {
-		return fmt::format("{: >{}}{}", "", indent, "NONE");
+		return fmt::format("{:>{}}{}", "", indent, "NONE");
 	}
 
 	LR_NODISCARD("") virtual std::string name() const {
@@ -106,7 +89,7 @@ public:
 	LR_NODISCARD("")
 	virtual std::string repr(uint64_t indent, uint64_t typeWidth,
 							 uint64_t valWidth) const {
-		return fmt::format("{: >{}}[ {:^{}} ] [ {:^{}} ]",
+		return fmt::format("{:>{}}[ {:^{}} ] [ {:^{}} ]",
 						   "",
 						   indent,
 						   type(),
@@ -188,7 +171,7 @@ public:
 	}
 
 	LR_NODISCARD("") std::string str(uint64_t indent) const override {
-		return fmt::format("{: >{}}{}", "", indent, m_name);
+		return fmt::format("{:>{}}{}", "", indent, m_name);
 	}
 
 	LR_NODISCARD("")
@@ -246,11 +229,11 @@ public:
 	LR_NODISCARD("") Scalar eval() const override { return m_tree[0]->eval(); }
 
 	LR_NODISCARD("")
-	const std::vector<std::shared_ptr<Component>> &tree() const override {
+	const std::vector<std::shared_ptr<Component>> &tree() const {
 		return m_tree;
 	}
 
-	LR_NODISCARD("") std::vector<std::shared_ptr<Component>> &tree() override {
+	LR_NODISCARD("") std::vector<std::shared_ptr<Component>> &tree() {
 		return m_tree;
 	}
 
@@ -478,22 +461,22 @@ std::vector<Lexed> toPostfix(const std::vector<Lexed> &processed) {
 	std::vector<Lexed> postfix;
 	std::vector<Lexed> stack;
 
-	for (auto lex = processed.begin(); lex != processed.end(); ++lex) {
-		if (lex->type & TYPE_VARIABLE) { // Number or string
-			postfix.emplace_back(*lex);
-		} else if (lex->type & (TYPE_OPERATOR | TYPE_FUNCTION)) {
+	for (const auto &lex : processed) {
+		if (lex.type & TYPE_VARIABLE) { // Number or string
+			postfix.emplace_back(lex);
+		} else if (lex.type & (TYPE_OPERATOR | TYPE_FUNCTION)) {
 			// Pop operators with higher precedence than the current one
 			while (!stack.empty() &&
-				   precedence(stack.back().type) >= precedence(lex->type)) {
+				   precedence(stack.back().type) >= precedence(lex.type)) {
 				postfix.emplace_back(stack.back());
 				stack.pop_back();
 			}
 
 			// Push the current operator onto the stack
-			stack.emplace_back(*lex);
-		} else if (lex->type & TYPE_LPAREN) {
-			stack.emplace_back(*lex);
-		} else if (lex->type & TYPE_RPAREN) {
+			stack.emplace_back(lex);
+		} else if (lex.type & TYPE_LPAREN) {
+			stack.emplace_back(lex);
+		} else if (lex.type & TYPE_RPAREN) {
 			// Pop all operators until the matching LPAREN
 			while (stack.back().type != TYPE_LPAREN) {
 				postfix.emplace_back(stack.back());
@@ -691,7 +674,7 @@ int main() {
 
 	registerFunctions();
 
-	std::string equation = "sin(22/7)";
+	std::string equation = "1/3 + 2/3";
 
 	auto tokenized = tokenize(equation);
 	auto lexed	   = lexer(tokenized);

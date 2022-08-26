@@ -1,13 +1,20 @@
 #include <librapid/librapid.hpp>
 
-#include "include/symbomath.hpp"
 #include <memory>
 #include <functional>
 #include <utility>
 
 namespace lrc = librapid;
 
-using Scalar = lrc::mpfr; // Type used in all calculations
+// #define SYMBOMATH_MULTIPRECISION
+
+// Type used in all calculations
+#if defined(SYMBOMATH_MULTIPRECISION)
+using Scalar = lrc::mpfr; // MPFR multiprecision float
+#else
+using Scalar = double; // Normal 64bit float
+#endif
+
 inline constexpr int64_t formatWidth = 15;
 
 static inline constexpr uint64_t TYPE_VARIABLE = 1ULL << 63;
@@ -33,28 +40,6 @@ static inline constexpr uint64_t TYPE_FUNCTION = 1ULL << 12;
 // Object Statuses
 static inline constexpr uint64_t STATUS_MOVED = 1ULL << 32;
 
-std::string tokenToString(uint64_t tok) {
-	// Remove high-level specifiers
-	tok &= ~TYPE_VARIABLE;
-	tok &= ~TYPE_OPERATOR;
-
-	if (!tok || tok == (uint64_t)-1) return "NONE";
-	if (tok & TYPE_DIGIT) return "DIGIT";
-	if (tok & TYPE_CHAR) return "CHAR";
-	if (tok & TYPE_ADD) return "ADD";
-	if (tok & TYPE_SUB) return "SUB";
-	if (tok & TYPE_MUL) return "MUL";
-	if (tok & TYPE_DIV) return "DIV";
-	if (tok & TYPE_CARET) return "CARET";
-	if (tok & TYPE_LPAREN) return "LPAREN";
-	if (tok & TYPE_RPAREN) return "RPAREN";
-	if (tok & TYPE_POINT) return "POINT";
-	if (tok & TYPE_NUMBER) return "NUMBER";
-	if (tok & TYPE_FUNCTION) return "FUNCTION"; // Check this before STRING
-	if (tok & TYPE_STRING) return "STRING";
-	return "UNKNOWN";
-}
-
 int64_t precedence(const uint64_t type) {
 	if (type & TYPE_ADD || type & TYPE_SUB) return 1;
 	if (type & TYPE_MUL || type & TYPE_DIV) return 2;
@@ -71,11 +56,28 @@ class Component {
 public:
 	Component() = default;
 
-	LR_NODISCARD("") virtual Scalar eval() const {
+	virtual void treeDepth(int64_t &depth) const {}
+
+	LR_NODISCARD("")
+	virtual Scalar eval() const {
 		LR_ASSERT(false,
 				  "{} object cannot be evaluated (numerically) directly",
 				  type());
 		return 0;
+	}
+
+	LR_NODISCARD("")
+	virtual std::shared_ptr<Component> substitute(
+	  const std::map<std::string, std::shared_ptr<Component>> &substitutions)
+	  const {
+		LR_ASSERT(false, "{} object cannot be substituted into", type());
+		return nullptr;
+	}
+
+	LR_NODISCARD("")
+	virtual std::shared_ptr<Component> differentiate() const {
+		LR_ASSERT(false, "{} object cannot be differentiated", type());
+		return nullptr;
 	}
 
 	LR_NODISCARD("") virtual std::string str(uint64_t indent) const {
@@ -105,128 +107,21 @@ private:
 	  m_tmpTree; // Empty value to return in tree()
 };
 
-class Number : public Component {
-public:
-	Number() : Component() {}
-	explicit Number(const Scalar &value) : Component(), m_value(value) {}
-
-	explicit Number(const std::string &value) : Component() {
-		scn::scan(value, "{}", m_value);
-	}
-
-	LR_NODISCARD("") Scalar eval() const override { return m_value; }
-
-	LR_NODISCARD("") std::string str(uint64_t indent) const override {
-		return fmt::format("{: >{}}{}", "", indent, m_value);
-	}
-
-	LR_NODISCARD("") std::string name() const override {
-		return "BUILT_IN_NUMBER_TYPE";
-	}
-
-	LR_NODISCARD("") std::string type() const override { return "NUMBER"; }
-
-private:
-	Scalar m_value = 0;
-};
-
-class Variable : public Component {
-public:
-	Variable() : Component() {}
-	explicit Variable(std::string name) :
-			Component(), m_name(std::move(name)) {}
-
-	LR_NODISCARD("") std::string str(uint64_t indent) const override {
-		return m_name;
-	}
-
-	LR_NODISCARD("") std::string name() const override { return m_name; }
-
-	LR_NODISCARD("") std::string type() const override { return "VARIABLE"; }
-
-private:
-	std::string m_name = "NONAME";
-};
-
-class Function : public Component {
-public:
-	Function() : Component() {}
-
-	Function(const Function &other) = default;
-
-	explicit Function(
-	  std::string name, std::string format,
-	  std::function<Scalar(const std::vector<Scalar> &)> functor,
-	  uint64_t numOperands,
-	  std::vector<std::shared_ptr<Component>> values = {}) :
-			Component(),
-			m_name(std::move(name)), m_format(std::move(format)),
-			m_functor(std::move(functor)), m_numOperands(numOperands),
-			m_values(std::move(values)) {}
-
-	LR_NODISCARD("") Scalar eval() const override {
-		std::vector<Scalar> operands;
-		for (const auto &val : m_values) operands.push_back(val->eval());
-		return m_functor(operands);
-	}
-
-	LR_NODISCARD("") std::string str(uint64_t indent) const override {
-		return fmt::format("{:>{}}{}", "", indent, m_name);
-	}
-
-	LR_NODISCARD("")
-	std::string repr(uint64_t indent, uint64_t typeWidth,
-					 uint64_t valWidth) const override {
-		std::string res = fmt::format("{: >{}}[ {:^{}} ] [ {:^{}} ]",
-									  "",
-									  indent,
-									  type(),
-									  typeWidth,
-									  str(0),
-									  valWidth);
-
-		// Format stuff really nicely :)
-		uint64_t longestType = 0, longestValue = 0;
-		for (const auto &val : m_values) {
-			longestType	 = lrc::max(longestType, val->type().length());
-			longestValue = lrc::max(longestValue, val->str(0).length());
-		}
-
-		for (const auto &val : m_values)
-			res += fmt::format(
-			  "\n{}", val->repr(indent + 4, longestType, longestValue));
-
-		return res;
-	}
-
-	LR_NODISCARD("") uint64_t numOperands() const { return m_numOperands; }
-
-	LR_NODISCARD("") auto values() const { return m_values; }
-
-	void addValue(const std::shared_ptr<Component> &value) {
-		m_values.push_back(value);
-	}
-
-	LR_NODISCARD("") std::string name() const override { return m_name; }
-
-	LR_NODISCARD("") std::string type() const override { return "FUNCTION"; }
-
-	LR_NODISCARD("") std::string format() const { return m_format; }
-
-private:
-	std::string m_name	 = "NULLOP";
-	std::string m_format = "NULLOP";
-	std::function<Scalar(const std::vector<Scalar> &)> m_functor;
-	uint64_t m_numOperands = 0;
-
-	std::vector<std::shared_ptr<Component>> m_values = {};
-};
-
 class Tree : public Component {
 public:
 	Tree() : Component() {}
 
-	LR_NODISCARD("") Scalar eval() const override { return m_tree[0]->eval(); }
+	LR_NODISCARD("")
+	Scalar eval() const override { return m_tree[0]->eval(); }
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component> substitute(
+	  const std::map<std::string, std::shared_ptr<Component>> &substitutions)
+	  const override {
+		std::shared_ptr<Tree> res = std::make_shared<Tree>();
+		res->tree().emplace_back(m_tree[0]->substitute(substitutions));
+		return res;
+	}
 
 	LR_NODISCARD("")
 	const std::vector<std::shared_ptr<Component>> &tree() const {
@@ -235,6 +130,10 @@ public:
 
 	LR_NODISCARD("") std::vector<std::shared_ptr<Component>> &tree() {
 		return m_tree;
+	}
+
+	void treeDepth(int64_t &depth) const override {
+		m_tree[0]->treeDepth(depth);
 	}
 
 	LR_NODISCARD("") std::string str(uint64_t indent) const override {
@@ -264,8 +163,221 @@ private:
 	std::vector<std::shared_ptr<Component>> m_tree;
 };
 
+class Number : public Component {
+public:
+	Number() : Component() {}
+	explicit Number(const Scalar &value) : Component(), m_value(value) {}
+
+	explicit Number(const std::string &value) : Component() {
+		scn::scan(value, "{}", m_value);
+	}
+
+	void treeDepth(int64_t &depth) const override { ++depth; }
+
+	LR_NODISCARD("")
+	Scalar eval() const override { return m_value; }
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component> substitute(
+	  const std::map<std::string, std::shared_ptr<Component>> &substitutions)
+	  const override {
+		return std::make_shared<Number>(m_value);
+	}
+
+	LR_NODISCARD("") std::string str(uint64_t indent) const override {
+		return fmt::format("{: >{}}{}", "", indent, m_value);
+	}
+
+	LR_NODISCARD("") std::string name() const override {
+		return "BUILT_IN_NUMBER_TYPE";
+	}
+
+	LR_NODISCARD("") std::string type() const override { return "NUMBER"; }
+
+private:
+	Scalar m_value = 0;
+};
+
+class Variable : public Component {
+public:
+	Variable() : Component() {}
+	explicit Variable(std::string name) :
+			Component(), m_name(std::move(name)) {}
+
+	LR_NODISCARD("")
+	Scalar eval() const override {
+		LR_ASSERT(false,
+				  "Cannot numerically evaluate variable {}. Missing call to "
+				  "'substitute'?",
+				  m_name);
+	}
+
+	void treeDepth(int64_t &depth) const override { ++depth; }
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component> substitute(
+	  const std::map<std::string, std::shared_ptr<Component>> &substitutions)
+	  const override {
+		auto it =
+		  std::find_if(substitutions.begin(),
+					   substitutions.end(),
+					   [&](auto &pair) { return pair.first == m_name; });
+		if (it != substitutions.end())
+			return it->second->substitute(substitutions);
+
+		return std::make_shared<Variable>(m_name);
+	}
+
+	LR_NODISCARD("") std::string str(uint64_t indent) const override {
+		return m_name;
+	}
+
+	LR_NODISCARD("") std::string name() const override { return m_name; }
+
+	LR_NODISCARD("") std::string type() const override { return "VARIABLE"; }
+
+private:
+	std::string m_name = "NONAME";
+};
+
+class Function : public Component {
+public:
+	Function() : Component() {}
+
+	Function(const Function &other) = default;
+
+	explicit Function(
+	  std::string name, std::string format,
+	  std::function<Scalar(const std::vector<Scalar> &)> functor,
+	  uint64_t numOperands,
+	  std::vector<std::shared_ptr<Component>> values = {}) :
+			Component(),
+			m_name(std::move(name)), m_format(std::move(format)),
+			m_functor(std::move(functor)), m_numOperands(numOperands),
+			m_values(std::move(values)) {}
+
+	void treeDepth(int64_t &depth) const override {
+		std::vector<int64_t> depths(numOperands(), 0);
+		for (int64_t i = 0; i < numOperands(); ++i) {
+			int64_t tmpDepth = depth;
+			m_values[i]->treeDepth(tmpDepth);
+			depths[i] = tmpDepth;
+		}
+
+		depth = *std::max_element(depths.begin(), depths.end());
+		++depth;
+	}
+
+	LR_NODISCARD("")
+	Scalar eval() const override {
+		std::vector<Scalar> operands;
+		for (const auto &val : m_values) operands.push_back(val->eval());
+		return m_functor(operands);
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component> substitute(
+	  const std::map<std::string, std::shared_ptr<Component>> &substitutions)
+	  const override {
+		std::shared_ptr<Function> res = std::make_shared<Function>(
+		  m_name, m_format, m_functor, m_numOperands);
+		for (const auto &val : m_values)
+			res->addValue(val->substitute(substitutions));
+		return res;
+	}
+
+	LR_NODISCARD("") std::string str(uint64_t indent) const override {
+		return fmt::format("{:>{}}{}", "", indent, m_name);
+	}
+
+	LR_NODISCARD("")
+	std::string repr(uint64_t indent, uint64_t typeWidth,
+					 uint64_t valWidth) const override {
+		std::string res = fmt::format("{: >{}}[ {:^{}} ] [ {:^{}} ]",
+									  "",
+									  indent,
+									  type(),
+									  typeWidth,
+									  str(0),
+									  valWidth);
+
+		// Format stuff really nicely :)
+		uint64_t longestType = 0, longestValue = 0;
+		for (const auto &val : m_values) {
+			if (val->type() == "TREE") continue;
+			longestType	 = lrc::max(longestType, val->type().length());
+			longestValue = lrc::max(longestValue, val->str(0).length());
+		}
+
+		for (const auto &val : m_values) {
+			if (val->type() == "TREE") {
+				res += fmt::format(
+				  "\n{}",
+				  std::dynamic_pointer_cast<Tree>(val)->tree()[0]->repr(
+					indent + 4, longestType, longestValue));
+			} else {
+				res += fmt::format(
+				  "\n{}", val->repr(indent + 4, longestType, longestValue));
+			}
+		}
+
+		return res;
+	}
+
+	LR_NODISCARD("") uint64_t numOperands() const { return m_numOperands; }
+
+	LR_NODISCARD("")
+	const std::vector<std::shared_ptr<Component>> &values() const {
+		return m_values;
+	}
+
+	LR_NODISCARD("") std::vector<std::shared_ptr<Component>> &values() {
+		return m_values;
+	}
+
+	void addValue(const std::shared_ptr<Component> &value) {
+		m_values.push_back(value);
+	}
+
+	LR_NODISCARD("") std::string name() const override { return m_name; }
+
+	LR_NODISCARD("") std::string type() const override { return "FUNCTION"; }
+
+	LR_NODISCARD("") std::string format() const { return m_format; }
+
+private:
+	std::string m_name	 = "NULLOP";
+	std::string m_format = "NULLOP";
+	std::function<Scalar(const std::vector<Scalar> &)> m_functor;
+	uint64_t m_numOperands = 0;
+
+	std::vector<std::shared_ptr<Component>> m_values = {};
+};
+
+// All derivative rules will inherit from this class
+class DerivativeRule {
+public:
+	DerivativeRule() = default;
+
+	// Returns true if this rule can be applied to the input component
+	LR_NODISCARD("")
+	virtual bool applicable(const std::shared_ptr<Component> &component,
+							const std::string &wrt) const = 0;
+
+	// Returns the derivative of the input component
+	LR_NODISCARD("")
+	virtual std::shared_ptr<Component>
+	derivative(const std::shared_ptr<Component> &component,
+			   const std::string &wrt) const = 0;
+
+private:
+};
+
 // Registered functions
 static inline std::vector<std::shared_ptr<Function>> functions;
+
+// Registered constants
+static inline std::map<std::string, std::shared_ptr<Component>> constants;
 
 auto findFunction(const std::string &name) {
 	// This should probably be a hash-map
@@ -539,7 +651,7 @@ genTree(const std::vector<std::shared_ptr<Component>> &values) {
 	std::vector<std::shared_ptr<Component>> stack;
 
 	for (const auto &lex : values) {
-		if (lex->type() == "NUMBER") {
+		if (lex->type() == "NUMBER" || lex->type() == "VARIABLE") {
 			stack.emplace_back(lex);
 		} else if (lex->type() == "FUNCTION") {
 			auto funcCast = std::dynamic_pointer_cast<Function>(lex);
@@ -568,88 +680,247 @@ genTree(const std::vector<std::shared_ptr<Component>> &values) {
 	return res;
 }
 
-void registerFunctions() {
-	// Add the addition operator
-	functions.emplace_back(std::make_shared<Function>(
-	  "ADD",
-	  "{} + {}",
-	  [](const std::vector<Scalar> &args) { return args[0] + args[1]; },
-	  2));
+#include "include/functions.hpp"
 
-	// Add the subtraction operator
-	functions.emplace_back(std::make_shared<Function>(
-	  "SUB",
-	  "{} - {}",
-	  [](const std::vector<Scalar> &args) { return args[0] - args[1]; },
-	  2));
-
-	// Add the multiplication operator
-	functions.emplace_back(std::make_shared<Function>(
-	  "MUL",
-	  "{} * {}",
-	  [](const std::vector<Scalar> &args) { return args[0] * args[1]; },
-	  2));
-
-	// Add the division operator
-	functions.emplace_back(std::make_shared<Function>(
-	  "DIV",
-	  "{} / {}",
-	  [](const std::vector<Scalar> &args) { return args[0] / args[1]; },
-	  2));
-
-	// Add the exponentiation operator
-	functions.emplace_back(std::make_shared<Function>(
-	  "POW",
-	  "{} ^ {}",
-	  [](const std::vector<Scalar> &args) {
-		  return lrc::pow(args[0], args[1]);
-	  },
-	  2));
-
-	// Add the function sin(x)
-	functions.emplace_back(std::make_shared<Function>(
-	  "sin",
-	  "sin({})",
-	  [](const std::vector<Scalar> &args) { return lrc::sin(args[0]); },
-	  1));
-
-	// Add the function cos(x)
-	functions.emplace_back(std::make_shared<Function>(
-	  "cos",
-	  "cos({})",
-	  [](const std::vector<Scalar> &args) { return lrc::cos(args[0]); },
-	  1));
-
-	// Add the function tan(x)
-	functions.emplace_back(std::make_shared<Function>(
-	  "tan",
-	  "tan({})",
-	  [](const std::vector<Scalar> &args) { return lrc::tan(args[0]); },
-	  1));
-
-	// Add the function csc(x)
-	functions.emplace_back(std::make_shared<Function>(
-	  "csc",
-	  "csc({})",
-	  [](const std::vector<Scalar> &args) { return lrc::csc(args[0]); },
-	  1));
-
-	// Add the function sec(x)
-	functions.emplace_back(std::make_shared<Function>(
-	  "sec",
-	  "sec({})",
-	  [](const std::vector<Scalar> &args) { return lrc::sec(args[0]); },
-	  1));
-
-	// Add the function cot(x)
-	functions.emplace_back(std::make_shared<Function>(
-	  "cot",
-	  "cot({})",
-	  [](const std::vector<Scalar> &args) { return lrc::cot(args[0]); },
-	  1));
+Scalar eval(const std::shared_ptr<Component> &tree) {
+	// Numerically evaluate the tree
+	return tree->eval();
 }
 
+std::shared_ptr<Component> substitute(
+  const std::shared_ptr<Component> &tree,
+  const std::map<std::string, std::shared_ptr<Component>> &substitutions = {}) {
+	return tree->substitute(substitutions);
+}
+
+std::shared_ptr<Component> autoParse(const std::string &input) {
+	auto tokenized = tokenize(input);
+	auto lexed	   = lexer(tokenized);
+
+	if (lexed.size() == 1) { // A single term
+		if (lexed[0].type & TYPE_NUMBER)
+			return std::make_shared<Number>(lexed[0].val);
+		else if (lexed[0].type & TYPE_VARIABLE)
+			return std::make_shared<Variable>(lexed[0].val);
+	}
+
+	auto processed = process(lexed);
+	auto postfix   = toPostfix(processed);
+	auto parsed	   = parse(postfix);
+	auto tree	   = genTree(parsed);
+
+	return tree; // Return the tree object
+}
+
+// Forward declare
+std::shared_ptr<Component> differentiate(const std::shared_ptr<Component> &,
+										 const std::string &);
+
+// Differentiate a scalar or variable (not wrt)
+class DerivScalar : public DerivativeRule {
+public:
+	DerivScalar() : DerivativeRule() {}
+
+	LR_NODISCARD("")
+	bool applicable(const std::shared_ptr<Component> &component,
+					const std::string &wrt) const override {
+		std::string type = component->type();
+		if (type == "NUMBER" || type == "VARIABLE") return true;
+		return false;
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	derivative(const std::shared_ptr<Component> &component,
+			   const std::string &wrt) const override {
+		/*
+		 * d/dx a = 0, for a in R
+		 * d/dx y = 0
+		 * d/dx x = 1
+		 */
+
+		if (component->type() == "NUMBER")
+			return std::make_shared<Number>(0);
+		else if (component->type() == "VARIABLE") {
+			if (std::dynamic_pointer_cast<Variable>(component)->name() == wrt)
+				return std::make_shared<Number>(1);
+			else
+				return std::make_shared<Number>(0);
+		}
+		return nullptr;
+	}
+};
+
+// Differentiate addition and subtraction
+class DerivSumDiff : public DerivativeRule {
+public:
+	DerivSumDiff() : DerivativeRule() {}
+
+	LR_NODISCARD("")
+	bool applicable(const std::shared_ptr<Component> &component,
+					const std::string &wrt) const override {
+		std::string type = component->type();
+		if (type == "FUNCTION") {
+			auto func = std::dynamic_pointer_cast<Function>(component);
+			if (func->name() == "ADD" || func->name() == "SUB") return true;
+		}
+		return false;
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	derivative(const std::shared_ptr<Component> &component,
+			   const std::string &wrt) const override {
+		/*
+		 * d/dx (a + b) = d/dx a + d/dx b
+		 * d/dx (a - b) = d/dx a - d/dx b
+		 */
+
+		// Extract operands
+		auto op	  = std::dynamic_pointer_cast<Function>(component);
+		auto vals = op->values();
+		LR_ASSERT(vals.size() == 2, "Expected 2 operands");
+		std::shared_ptr<Component> lhs, rhs;
+		lhs = differentiate(vals[0], wrt);
+		rhs = differentiate(vals[1], wrt);
+
+		// Duplicate addition function
+		auto it = findFunction(op->name());
+		LR_ASSERT(it != functions.end(), "Function not found");
+
+		auto func = std::make_shared<Function>(**it);
+		func->addValue(lhs);
+		func->addValue(rhs);
+
+		return func;
+	}
+};
+
+// Differentiate multiplication
+class DerivProd : public DerivativeRule {
+public:
+	DerivProd() : DerivativeRule() {}
+
+	LR_NODISCARD("")
+	bool applicable(const std::shared_ptr<Component> &component,
+					const std::string &wrt) const override {
+		std::string type = component->type();
+		if (type == "FUNCTION") {
+			auto func = std::dynamic_pointer_cast<Function>(component);
+			if (func->name() == "MUL") return true;
+		}
+		return false;
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	derivative(const std::shared_ptr<Component> &component,
+			   const std::string &wrt) const override {
+		/*
+		 * d/dx (a * b) = d/dx a * b + a * d/dx b
+		 */
+
+		// Extract operands
+		auto op	  = std::dynamic_pointer_cast<Function>(component);
+		auto vals = op->values();
+		LR_ASSERT(vals.size() == 2, "Expected 2 operands");
+		std::shared_ptr<Component> da, db;
+		da = differentiate(vals[0], wrt);
+		db = differentiate(vals[1], wrt);
+
+		// Duplicate addition function
+		auto addIt = findFunction("ADD");
+		auto mulIt = findFunction("MUL");
+		LR_ASSERT(addIt != functions.end(), "Function not found");
+		LR_ASSERT(mulIt != functions.end(), "Function not found");
+
+		auto leftMul = std::make_shared<Function>(**mulIt);
+		leftMul->addValue(da);
+		leftMul->addValue(vals[1]);
+
+		auto rightMul = std::make_shared<Function>(**mulIt);
+		rightMul->addValue(vals[0]);
+		rightMul->addValue(db);
+
+		auto sum = std::make_shared<Function>(**addIt);
+		sum->addValue(leftMul);
+		sum->addValue(rightMul);
+
+		return sum;
+	}
+};
+
+// Differentiate division
+class DerivQuotient : public DerivativeRule {
+public:
+	DerivQuotient() : DerivativeRule() {}
+
+	LR_NODISCARD("")
+	bool applicable(const std::shared_ptr<Component> &component,
+					const std::string &wrt) const override {
+		std::string type = component->type();
+		if (type == "FUNCTION") {
+			auto func = std::dynamic_pointer_cast<Function>(component);
+			if (func->name() == "DIV") return true;
+		}
+		return false;
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	derivative(const std::shared_ptr<Component> &component,
+			   const std::string &wrt) const override {
+		/*
+		 * d/dx (a / b) = (d/dx a * b - a * d/dx b) / b^2
+		 */
+
+		// Extract operands
+		auto op	  = std::dynamic_pointer_cast<Function>(component);
+		auto vals = op->values();
+		LR_ASSERT(vals.size() == 2, "Expected 2 operands");
+		std::shared_ptr<Component> da, db;
+		da = differentiate(vals[0], wrt);
+		db = differentiate(vals[1], wrt);
+
+		// Duplicate addition function
+		auto subIt = findFunction("SUB");
+		auto mulIt = findFunction("MUL");
+		auto divIt = findFunction("DIV");
+		LR_ASSERT(subIt != functions.end(), "Function not found");
+		LR_ASSERT(mulIt != functions.end(), "Function not found");
+		LR_ASSERT(divIt != functions.end(), "Function not found");
+
+		auto leftMul = std::make_shared<Function>(**mulIt);
+		leftMul->addValue(da);
+		leftMul->addValue(vals[1]);
+
+		auto rightMul = std::make_shared<Function>(**mulIt);
+		rightMul->addValue(vals[0]);
+		rightMul->addValue(db);
+
+		auto sum = std::make_shared<Function>(**subIt);
+		sum->addValue(leftMul);
+		sum->addValue(rightMul);
+
+		auto bSquare = std::make_shared<Function>(**mulIt);
+		bSquare->addValue(vals[1]);
+		bSquare->addValue(vals[1]);
+
+		auto div = std::make_shared<Function>(**divIt);
+		div->addValue(sum);
+		div->addValue(bSquare);
+
+		return div;
+	}
+};
+
+// Derivative rules
+static inline std::vector<std::shared_ptr<DerivativeRule>> derivativeRules;
+
 std::string prettyPrint(const std::shared_ptr<Component> &object) {
+	if (object->type() == "TREE")
+		return prettyPrint(std::dynamic_pointer_cast<Tree>(object)->tree()[0]);
+
 	if (object->type() == "NUMBER")
 		return lrc::str(std::dynamic_pointer_cast<Number>(object)->eval());
 
@@ -659,54 +930,73 @@ std::string prettyPrint(const std::shared_ptr<Component> &object) {
 	if (object->type() == "FUNCTION") {
 		auto func	= std::dynamic_pointer_cast<Function>(object);
 		auto format = func->format();
+		std::vector<std::string> args;
+		for (uint64_t i = 0; i < func->numOperands(); ++i) {
+			std::shared_ptr<Component> current = func->values()[i];
+			std::string printed				   = prettyPrint(current);
+			int64_t depth					   = 0;
+			current->treeDepth(depth);
+			if (depth > 1)
+				args.emplace_back("(" + printed + ")");
+			else
+				args.emplace_back(printed);
+		}
+
+		switch (func->numOperands()) {
+			case 1: return fmt::format(format, args[0]);
+			case 2: return fmt::format(format, args[0], args[1]);
+			case 3: return fmt::format(format, args[0], args[1], args[2]);
+			case 4:
+				return fmt::format(format, args[0], args[1], args[2], args[3]);
+			default: return "too_many_args";
+		}
 	}
 
 	return "";
 }
 
-Scalar eval(const std::shared_ptr<Tree> &tree) {
-	// Numerically evaluate the tree
-	return tree->eval();
+#include "include/differentiate.hpp"
+#include "include/constants.hpp"
+
+std::shared_ptr<Component>
+differentiate(const std::shared_ptr<Component> &input, const std::string &wrt) {
+	if (input->type() == "TREE")
+		return differentiate(std::dynamic_pointer_cast<Tree>(input)->tree()[0],
+							 wrt);
+
+	for (const auto &rule : derivativeRules) {
+		if (rule->applicable(input, wrt)) {
+			return rule->derivative(input, wrt);
+		}
+	}
+
+	LR_ASSERT(false, "No applicable rule found for type {}", input->type());
 }
 
 int main() {
 	lrc::prec(1000);
 
 	registerFunctions();
+	registerDerivativeRules();
+	registerConstants();
 
-	std::string equation = "1/3 + 2/3";
+	std::string equation(
+	  "5x");
+	std::map<std::string, std::shared_ptr<Component>> variables = {
+	  std::make_pair("x", autoParse("123")),
+	  std::make_pair("b", autoParse("2 + 4"))};
 
-	auto tokenized = tokenize(equation);
-	auto lexed	   = lexer(tokenized);
-	auto processed = process(lexed);
-	auto postfix   = toPostfix(processed);
-	auto parsed	   = parse(postfix);
-	auto tree	   = genTree(parsed);
+	auto tree	= autoParse(equation);
+	auto subbed = substitute(tree, variables);
+	auto diff	= differentiate(tree, "x");
 
-	// for (const auto &val : postfix) { fmt::print("{}\n", val.val); }
+	fmt::print("\n\n{}\n\n", prettyPrint(diff));
 
-	fmt::print("{}\n", tree->str(0));
-	fmt::print("Numeric result: {}\n", lrc::str(eval(tree)));
-
-	/*
-	fmt::print("Tokenize: ");
-	lrc::timeFunction([&]() { auto res = tokenize(equation); }, -1, -1, 2);
-
-	fmt::print("Lex: ");
-	lrc::timeFunction([&]() { auto res = lexer(tokenized); }, -1, -1, 2);
-
-	fmt::print("Process: ");
-	lrc::timeFunction([&]() { auto res = process(lexed); }, -1, -1, 2);
-
-	fmt::print("Postfix: ");
-	lrc::timeFunction([&]() { auto res = toPostfix(processed); }, -1, -1, 2);
-
-	fmt::print("Parse: ");
-	lrc::timeFunction([&]() { auto res = parse(postfix); }, -1, -1, 2);
-
-	fmt::print("Eval: ");
-	lrc::timeFunction([&]() { auto res = eval(tree); }, -1, -1, 2);
-	 */
+	fmt::print("{}\n\n\n", tree->str(0));
+	fmt::print("{}\n", subbed->str(0));
+	auto txt = prettyPrint(subbed);
+	fmt::print("Pretty print: {}\n", txt);
+	fmt::print("Numeric result: {}\n", lrc::str(eval(subbed)));
 
 	return 0;
 }

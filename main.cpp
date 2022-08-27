@@ -75,10 +75,13 @@ public:
 	}
 
 	LR_NODISCARD("")
-	virtual std::shared_ptr<Component> differentiate() const {
+	virtual std::shared_ptr<Component>
+	differentiate(const std::string &wrt) const {
 		LR_ASSERT(false, "{} object cannot be differentiated", type());
 		return nullptr;
 	}
+
+	LR_NODISCARD("") virtual bool canEval() const { return false; }
 
 	LR_NODISCARD("") virtual std::string str(uint64_t indent) const {
 		return fmt::format("{:>{}}{}", "", indent, "NONE");
@@ -121,6 +124,10 @@ public:
 		std::shared_ptr<Tree> res = std::make_shared<Tree>();
 		res->tree().emplace_back(m_tree[0]->substitute(substitutions));
 		return res;
+	}
+
+	LR_NODISCARD("") bool canEval() const override {
+		return m_tree[0]->canEval();
 	}
 
 	LR_NODISCARD("")
@@ -184,6 +191,8 @@ public:
 		return std::make_shared<Number>(m_value);
 	}
 
+	LR_NODISCARD("") bool canEval() const override { return true; }
+
 	LR_NODISCARD("") std::string str(uint64_t indent) const override {
 		return fmt::format("{: >{}}{}", "", indent, m_value);
 	}
@@ -193,6 +202,8 @@ public:
 	}
 
 	LR_NODISCARD("") std::string type() const override { return "NUMBER"; }
+
+	LR_NODISCARD("") Scalar value() const { return m_value; }
 
 private:
 	Scalar m_value = 0;
@@ -210,6 +221,8 @@ public:
 				  "Cannot numerically evaluate variable {}. Missing call to "
 				  "'substitute'?",
 				  m_name);
+
+		return Scalar(0);
 	}
 
 	void treeDepth(int64_t &depth) const override { ++depth; }
@@ -227,6 +240,8 @@ public:
 
 		return std::make_shared<Variable>(m_name);
 	}
+
+	LR_NODISCARD("") bool canEval() const override { return false; }
 
 	LR_NODISCARD("") std::string str(uint64_t indent) const override {
 		return m_name;
@@ -286,6 +301,12 @@ public:
 		return res;
 	}
 
+	LR_NODISCARD("") bool canEval() const override {
+		return std::all_of(m_values.begin(), m_values.end(), [](auto &val) {
+			return val->canEval();
+		});
+	}
+
 	LR_NODISCARD("") std::string str(uint64_t indent) const override {
 		return fmt::format("{:>{}}{}", "", indent, m_name);
 	}
@@ -338,6 +359,8 @@ public:
 	void addValue(const std::shared_ptr<Component> &value) {
 		m_values.push_back(value);
 	}
+
+	void clearValues() { m_values.clear(); }
 
 	LR_NODISCARD("") std::string name() const override { return m_name; }
 
@@ -452,7 +475,7 @@ std::vector<Lexed> lexer(const std::vector<Token> &tokens) {
 	 *
 	 * <digit> ::= 0-9
 	 * <character> ::= a-z | A-Z
-	 * <number> ::= <digit>+ | <digit>+ "." <digit>+
+	 * <number> ::= <digit>+ | <digit>+ "." <digit>+ | -<digit>+
 	 * <string> ::= <character>+
 	 * <operator> ::= + | - | * | / | ^
 	 * <parenthesis> ::= ( | )
@@ -519,10 +542,14 @@ std::vector<Lexed> process(const std::vector<Lexed> &lexed) {
 	std::vector<Lexed> tmp(lexed.begin(), lexed.end());
 	std::vector<Lexed> res;
 
+	bool addParen = false;
+
 	for (int64_t i = 0; i < tmp.size() - 1; ++i) {
 		if (tmp[i].type & TYPE_NUMBER &&
 			tmp[i + 1].type & (TYPE_LPAREN | TYPE_STRING)) {
 			// <number> <lparen>
+			addParen = true;
+			res.emplace_back(Lexed {TYPE_LPAREN, "("});
 			res.emplace_back(tmp[i]);
 			res.emplace_back(Lexed {TYPE_MUL | TYPE_OPERATOR, "*"});
 		} else if (tmp[i].type & TYPE_STRING && tmp[i + 1].type & TYPE_LPAREN) {
@@ -533,6 +560,10 @@ std::vector<Lexed> process(const std::vector<Lexed> &lexed) {
 				  }) == functions.end()) {
 				res.emplace_back(tmp[i]);
 				res.emplace_back(Lexed {TYPE_MUL | TYPE_OPERATOR, "*"});
+				if (addParen) {
+					res.emplace_back(Lexed {TYPE_RPAREN, ")"});
+					addParen = false;
+				}
 			} else {
 				// It's a function, so mark it as such and move it to the end of
 				// the term
@@ -557,14 +588,26 @@ std::vector<Lexed> process(const std::vector<Lexed> &lexed) {
 					// Value already moved, so push it back
 					res.emplace_back(
 					  Lexed {tmp[i].type | TYPE_FUNCTION, tmp[i].val});
+					if (addParen) {
+						res.emplace_back(Lexed {TYPE_RPAREN, ")"});
+						addParen = false;
+					}
 				}
 			}
 		} else {
 			res.emplace_back(tmp[i]);
+			if (addParen) {
+				res.emplace_back(Lexed {TYPE_RPAREN, ")"});
+				addParen = false;
+			}
 		}
 	}
 
 	res.emplace_back(tmp.back());
+	if (addParen) {
+		res.emplace_back(Lexed {TYPE_RPAREN, ")"});
+		addParen = false;
+	}
 
 	return res;
 }
@@ -715,6 +758,7 @@ std::shared_ptr<Component> autoParse(const std::string &input) {
 // Forward declare
 std::shared_ptr<Component> differentiate(const std::shared_ptr<Component> &,
 										 const std::string &);
+std::shared_ptr<Component> simplify(const std::shared_ptr<Component> &);
 
 // Differentiate a scalar or variable (not wrt)
 class DerivScalar : public DerivativeRule {
@@ -886,9 +930,11 @@ public:
 		auto subIt = findFunction("SUB");
 		auto mulIt = findFunction("MUL");
 		auto divIt = findFunction("DIV");
+		auto powIt = findFunction("POW");
 		LR_ASSERT(subIt != functions.end(), "Function not found");
 		LR_ASSERT(mulIt != functions.end(), "Function not found");
 		LR_ASSERT(divIt != functions.end(), "Function not found");
+		LR_ASSERT(powIt != functions.end(), "Function not found");
 
 		auto leftMul = std::make_shared<Function>(**mulIt);
 		leftMul->addValue(da);
@@ -902,9 +948,9 @@ public:
 		sum->addValue(leftMul);
 		sum->addValue(rightMul);
 
-		auto bSquare = std::make_shared<Function>(**mulIt);
+		auto bSquare = std::make_shared<Function>(**powIt);
 		bSquare->addValue(vals[1]);
-		bSquare->addValue(vals[1]);
+		bSquare->addValue(autoParse("2"));
 
 		auto div = std::make_shared<Function>(**divIt);
 		div->addValue(sum);
@@ -914,8 +960,335 @@ public:
 	}
 };
 
+// Differentiate exponent
+class DerivExponent : public DerivativeRule {
+public:
+	DerivExponent() : DerivativeRule() {}
+
+	LR_NODISCARD("")
+	bool applicable(const std::shared_ptr<Component> &component,
+					const std::string &wrt) const override {
+		std::string type = component->type();
+		if (type == "FUNCTION") {
+			auto func = std::dynamic_pointer_cast<Function>(component);
+			if (func->name() == "POW") return true;
+		}
+		return false;
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	derivative(const std::shared_ptr<Component> &component,
+			   const std::string &wrt) const override {
+		/*
+		 * d/dx (a ^ b) = b * a ^ (b - 1) * d/dx a			for b in R
+		 */
+
+		// Extract operands
+		auto op	  = std::dynamic_pointer_cast<Function>(component);
+		auto vals = op->values();
+		LR_ASSERT(vals.size() == 2, "Expected 2 operands");
+
+		if (vals[1]->canEval()) {
+			std::shared_ptr<Component> da, db;
+			da = differentiate(vals[0], wrt);
+
+			// Duplicate addition function
+			auto subIt = findFunction("SUB");
+			auto mulIt = findFunction("MUL");
+			auto divIt = findFunction("DIV");
+			auto powIt = findFunction("POW");
+			LR_ASSERT(subIt != functions.end(), "Function not found");
+			LR_ASSERT(mulIt != functions.end(), "Function not found");
+			LR_ASSERT(divIt != functions.end(), "Function not found");
+			LR_ASSERT(powIt != functions.end(), "Function not found");
+
+			// (b - 1)
+			auto bSub = std::make_shared<Function>(**subIt);
+			bSub->addValue(vals[1]);
+			bSub->addValue(autoParse("1"));
+
+			// a ^ (b - 1)
+			auto aPow = std::make_shared<Function>(**powIt);
+			aPow->addValue(vals[0]);
+			aPow->addValue(bSub);
+
+			// b * a ^ (b - 1)
+			auto bMul = std::make_shared<Function>(**mulIt);
+			bMul->addValue(vals[1]);
+			bMul->addValue(aPow);
+
+			// b * a ^ (b - 1) * d/dx a
+			auto mul = std::make_shared<Function>(**mulIt);
+			mul->addValue(bMul);
+			mul->addValue(da);
+
+			return mul;
+		}
+
+		LR_ASSERT(false, "Exponent cannot (yet) be differentiated");
+		return component;
+	}
+};
+
 // Derivative rules
 static inline std::vector<std::shared_ptr<DerivativeRule>> derivativeRules;
+
+class SimplificationRule {
+public:
+	SimplificationRule() = default;
+
+	LR_NODISCARD("")
+	virtual bool
+	applicable(const std::shared_ptr<Component> &component) const = 0;
+
+	LR_NODISCARD("")
+	virtual std::shared_ptr<Component>
+	simplifyInput(const std::shared_ptr<Component> &component) const = 0;
+};
+
+// Anything that can be numerically evaluated can be simplified
+class SimplifyEval : public SimplificationRule {
+public:
+	SimplifyEval() = default;
+
+	LR_NODISCARD("")
+	bool
+	applicable(const std::shared_ptr<Component> &component) const override {
+		return component->canEval();
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	simplifyInput(const std::shared_ptr<Component> &component) const override {
+		return std::make_shared<Number>(component->eval());
+	}
+};
+
+// Simplify addition
+class SimplifyAdd : public SimplificationRule {
+public:
+	SimplifyAdd() = default;
+
+	LR_NODISCARD("")
+	bool
+	applicable(const std::shared_ptr<Component> &component) const override {
+		return component->type() == "FUNCTION" &&
+			   (component->name() == "ADD" || component->name() == "SUB");
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	simplifyInput(const std::shared_ptr<Component> &component) const override {
+		auto func = std::dynamic_pointer_cast<Function>(component);
+		LR_ASSERT(func->numOperands() == 2, "Expected 2 operands");
+		auto left  = simplify(func->values()[0]);
+		auto right = simplify(func->values()[1]);
+
+		// 0 + x = x
+		if (left->type() == "NUMBER") {
+			if (std::dynamic_pointer_cast<Number>(left)->value() == 0) {
+				return right;
+			}
+		}
+
+		// x + 0 = x
+		if (right->type() == "NUMBER") {
+			if (std::dynamic_pointer_cast<Number>(right)->value() == 0) {
+				return left;
+			}
+		}
+
+		auto res = std::make_shared<Function>(*func);
+		res->clearValues();
+		res->addValue(left);
+		res->addValue(right);
+		return res;
+	}
+};
+
+// Simplify addition
+class SimplifySub : public SimplificationRule {
+public:
+	SimplifySub() = default;
+
+	LR_NODISCARD("")
+	bool
+	applicable(const std::shared_ptr<Component> &component) const override {
+		return component->type() == "FUNCTION" &&
+			   (component->name() == "ADD" || component->name() == "SUB");
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	simplifyInput(const std::shared_ptr<Component> &component) const override {
+		auto func = std::dynamic_pointer_cast<Function>(component);
+		LR_ASSERT(func->numOperands() == 2, "Expected 2 operands");
+		auto left  = simplify(func->values()[0]);
+		auto right = simplify(func->values()[1]);
+
+		// 0 - x = -x
+		if (left->type() == "NUMBER") {
+			if (std::dynamic_pointer_cast<Number>(left)->value() == 0) {
+				return right;
+			}
+		}
+
+		// x - 0 = x
+		if (right->type() == "NUMBER") {
+			if (std::dynamic_pointer_cast<Number>(right)->value() == 0) {
+				return left;
+			}
+		}
+
+		auto res = std::make_shared<Function>(*func);
+		res->clearValues();
+		res->addValue(left);
+		res->addValue(right);
+		return res;
+	}
+};
+
+// Simplify multiplication
+class SimplifyMul : public SimplificationRule {
+public:
+	SimplifyMul() = default;
+
+	LR_NODISCARD("")
+	bool
+	applicable(const std::shared_ptr<Component> &component) const override {
+		return component->type() == "FUNCTION" && component->name() == "MUL";
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	simplifyInput(const std::shared_ptr<Component> &component) const override {
+		auto func = std::dynamic_pointer_cast<Function>(component);
+		LR_ASSERT(func->numOperands() == 2, "Expected 2 operands");
+		auto left  = simplify(func->values()[0]);
+		auto right = simplify(func->values()[1]);
+
+		if (left->type() == "NUMBER") {
+			// 0 * x = 0
+			if (std::dynamic_pointer_cast<Number>(left)->value() == 0) {
+				return std::make_shared<Number>(0);
+			}
+
+			// 1 * x = x
+			if (std::dynamic_pointer_cast<Number>(left)->value() == 1) {
+				return right;
+			}
+		}
+
+		if (right->type() == "NUMBER") {
+			// x * 0 = 0
+			if (std::dynamic_pointer_cast<Number>(right)->value() == 0) {
+				return std::make_shared<Number>(0);
+			}
+
+			// x * 1 = x
+			if (std::dynamic_pointer_cast<Number>(right)->value() == 1) {
+				return left;
+			}
+		}
+
+		auto res = std::make_shared<Function>(*func);
+		res->clearValues();
+		res->addValue(left);
+		res->addValue(right);
+		return res;
+	}
+};
+
+// Simplify division
+class SimplifyDiv : public SimplificationRule {
+public:
+	SimplifyDiv() = default;
+
+	LR_NODISCARD("")
+	bool
+	applicable(const std::shared_ptr<Component> &component) const override {
+		return component->type() == "FUNCTION" && component->name() == "DIV";
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	simplifyInput(const std::shared_ptr<Component> &component) const override {
+		auto func = std::dynamic_pointer_cast<Function>(component);
+		LR_ASSERT(func->numOperands() == 2, "Expected 2 operands");
+		auto left  = simplify(func->values()[0]);
+		auto right = simplify(func->values()[1]);
+
+		if (left->type() == "NUMBER") {
+			// 0 / x = 0
+			if (std::dynamic_pointer_cast<Number>(left)->value() == 0) {
+				return std::make_shared<Number>(0);
+			}
+		}
+
+		if (right->type() == "NUMBER") {
+			// x / 1 = x
+			if (std::dynamic_pointer_cast<Number>(right)->value() == 1) {
+				return left;
+			}
+		}
+
+		auto res = std::make_shared<Function>(*func);
+		res->clearValues();
+		res->addValue(left);
+		res->addValue(right);
+		return res;
+	}
+};
+
+// Simplify exponentiation
+class SimplifyExponent : public SimplificationRule {
+public:
+	SimplifyExponent() = default;
+
+	LR_NODISCARD("")
+	bool
+	applicable(const std::shared_ptr<Component> &component) const override {
+		return component->type() == "FUNCTION" && component->name() == "POW";
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	simplifyInput(const std::shared_ptr<Component> &component) const override {
+		auto func = std::dynamic_pointer_cast<Function>(component);
+		LR_ASSERT(func->numOperands() == 2, "Expected 2 operands");
+		auto left  = simplify(func->values()[0]);
+		auto right = simplify(func->values()[1]);
+
+		if (left->type() == "NUMBER") {
+			// 0 ^ x = 0
+			if (std::dynamic_pointer_cast<Number>(left)->value() == 0) {
+				return std::make_shared<Number>(0);
+			}
+		}
+
+		if (right->type() == "NUMBER") {
+			// x ^ 0 = 1
+			if (std::dynamic_pointer_cast<Number>(right)->value() == 0) {
+				return std::make_shared<Number>(1);
+			}
+
+			if (std::dynamic_pointer_cast<Number>(right)->value() == 1) {
+				return left;
+			}
+		}
+
+		auto res = std::make_shared<Function>(*func);
+		res->clearValues();
+		res->addValue(left);
+		res->addValue(right);
+		return res;
+	}
+};
+
+// Simplification rules
+static inline std::vector<std::shared_ptr<SimplificationRule>>
+  simplificationRules;
 
 std::string prettyPrint(const std::shared_ptr<Component> &object) {
 	if (object->type() == "TREE")
@@ -957,12 +1330,18 @@ std::string prettyPrint(const std::shared_ptr<Component> &object) {
 
 #include "include/differentiate.hpp"
 #include "include/constants.hpp"
+#include "include/simplify.hpp"
 
 std::shared_ptr<Component>
-differentiate(const std::shared_ptr<Component> &input, const std::string &wrt) {
-	if (input->type() == "TREE")
-		return differentiate(std::dynamic_pointer_cast<Tree>(input)->tree()[0],
-							 wrt);
+differentiate(const std::shared_ptr<Component> &input,
+			  const std::string &wrt = "x") {
+	if (input->type() == "TREE") {
+		auto item =
+		  differentiate(std::dynamic_pointer_cast<Tree>(input)->tree()[0], wrt);
+		auto tree = std::make_shared<Tree>();
+		tree->tree().emplace_back(item);
+		return tree;
+	}
 
 	for (const auto &rule : derivativeRules) {
 		if (rule->applicable(input, wrt)) {
@@ -973,15 +1352,40 @@ differentiate(const std::shared_ptr<Component> &input, const std::string &wrt) {
 	LR_ASSERT(false, "No applicable rule found for type {}", input->type());
 }
 
+std::shared_ptr<Component> simplify(const std::shared_ptr<Component> &input) {
+	if (input->type() == "TREE") {
+		auto item = simplify(std::dynamic_pointer_cast<Tree>(input)->tree()[0]);
+		auto tree = std::make_shared<Tree>();
+		tree->tree().emplace_back(item);
+		return tree;
+	}
+
+	static auto evalRule = std::make_shared<SimplifyEval>();
+	auto current		 = input;
+
+	for (const auto &rule : simplificationRules) {
+		if (rule->applicable(current)) {
+			current = rule->simplifyInput(current);
+		}
+	}
+
+	// Apply numeric evaluation after all simplification is complete
+	if (evalRule->applicable(current)) {
+		current = evalRule->simplifyInput(current);
+	}
+
+	return current;
+}
+
 int main() {
 	lrc::prec(1000);
 
 	registerFunctions();
 	registerDerivativeRules();
 	registerConstants();
+	registerSimplifications();
 
-	std::string equation(
-	  "5x");
+	std::string equation("0 - 1");
 	std::map<std::string, std::shared_ptr<Component>> variables = {
 	  std::make_pair("x", autoParse("123")),
 	  std::make_pair("b", autoParse("2 + 4"))};
@@ -989,14 +1393,29 @@ int main() {
 	auto tree	= autoParse(equation);
 	auto subbed = substitute(tree, variables);
 	auto diff	= differentiate(tree, "x");
+	auto simple = simplify(tree);
 
-	fmt::print("\n\n{}\n\n", prettyPrint(diff));
+	fmt::print("\n\nEquation: {}\n", prettyPrint(tree));
+	fmt::print("Simplified: {}\n\n", prettyPrint(simple));
+	fmt::print("\nDerivative: {}\n", prettyPrint(diff));
+	fmt::print("Simplified: {}\n\n", prettyPrint(simplify(diff)));
 
 	fmt::print("{}\n\n\n", tree->str(0));
-	fmt::print("{}\n", subbed->str(0));
+	fmt::print("{}\n\n\n", subbed->str(0));
+	fmt::print("{}\n", diff->str(0));
 	auto txt = prettyPrint(subbed);
 	fmt::print("Pretty print: {}\n", txt);
 	fmt::print("Numeric result: {}\n", lrc::str(eval(subbed)));
+
+	{
+		auto help = autoParse("1/x");
+		for (int i = 0; i < 3; ++i) {
+			// fmt::print("{}\n", prettyPrint(help));
+			help = simplify(differentiate(help));
+		}
+
+		fmt::print("{}\n", prettyPrint(help));
+	}
 
 	return 0;
 }

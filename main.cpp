@@ -1510,7 +1510,7 @@ int main() {
 	registerConstants();
 	registerSimplifications();
 
-	std::string equation("5x^2 + 3x + 2");
+	std::string equation("1/x");
 
 	std::map<std::string, std::shared_ptr<Component>> variables = {
 	  std::make_pair("x", autoParse("5"))};
@@ -1539,6 +1539,28 @@ int main() {
 	//
 	//		fmt::print("{}\n", prettyPrint(help));
 	//	}
+
+	{
+		std::string eqn("((x^2 - x - 1)/(x^2 + x + 1))^5");
+		lrc::timeVerbose([&]() { auto res = autoParse(eqn); }, -1, -1, 1);
+		auto parsed = autoParse(eqn);
+		lrc::timeVerbose(
+		  [&]() { auto res = differentiate(parsed); }, -1, -1, 1);
+		auto differentiated = differentiate(parsed);
+		lrc::timeVerbose(
+		  [&]() { auto res = simplify(differentiated); }, -1, -1, 1);
+
+		std::map<std::string, std::shared_ptr<Component>> vars = {
+		  std::make_pair("x", autoParse("5"))};
+
+		fmt::print("Evaluating\n");
+		lrc::timeVerbose(
+		  [&]() { auto res = eval(substitute(parsed, vars)); }, -1, -1, 10);
+
+		fmt::print("{}\n", prettyPrint(parsed));
+		fmt::print("{}\n", prettyPrint(differentiated));
+		fmt::print("{}\n", prettyPrint(simplify(differentiated)));
+	}
 
 	return 0;
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 void registerDerivativeRules() {
+	derivativeRules.emplace_back(std::make_shared<DerivUnaryPlusMinus>());
 	derivativeRules.emplace_back(std::make_shared<DerivScalar>());
 	derivativeRules.emplace_back(std::make_shared<DerivSumDiff>());
 	derivativeRules.emplace_back(std::make_shared<DerivProd>());

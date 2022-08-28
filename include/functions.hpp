@@ -1,6 +1,20 @@
 #pragma once
 
 void registerFunctions() {
+	// Add unary minus
+	functions.emplace_back(std::make_shared<Function>(
+	  "MINUS",
+	  "-{}",
+	  [](const std::vector<Scalar> &args) { return -args[0]; },
+	  1));
+
+	// Add unary plus
+	functions.emplace_back(std::make_shared<Function>(
+	  "PLUS",
+	  "+{}",
+	  [](const std::vector<Scalar> &args) { return +args[0]; },
+	  1));
+
 	// Add the addition operator
 	functions.emplace_back(std::make_shared<Function>(
 	  "ADD",

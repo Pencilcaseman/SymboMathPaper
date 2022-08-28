@@ -32,10 +32,14 @@ static inline constexpr uint64_t TYPE_LPAREN = 1ULL << 7;
 static inline constexpr uint64_t TYPE_RPAREN = 1ULL << 8;
 static inline constexpr uint64_t TYPE_POINT	 = 1ULL << 9;
 
+// Unary +-
+static inline constexpr uint64_t TYPE_PLUS	= 1ULL << 10;
+static inline constexpr uint64_t TYPE_MINUS = 1ULL << 11;
+
 // High-level types
-static inline constexpr uint64_t TYPE_NUMBER   = 1ULL << 10;
-static inline constexpr uint64_t TYPE_STRING   = 1ULL << 11;
-static inline constexpr uint64_t TYPE_FUNCTION = 1ULL << 12;
+static inline constexpr uint64_t TYPE_NUMBER   = 1ULL << 12;
+static inline constexpr uint64_t TYPE_STRING   = 1ULL << 13;
+static inline constexpr uint64_t TYPE_FUNCTION = 1ULL << 14;
 
 // Object Statuses
 static inline constexpr uint64_t STATUS_MOVED = 1ULL << 32;
@@ -43,6 +47,7 @@ static inline constexpr uint64_t STATUS_MOVED = 1ULL << 32;
 int64_t precedence(const uint64_t type) {
 	if (type & TYPE_ADD || type & TYPE_SUB) return 1;
 	if (type & TYPE_MUL || type & TYPE_DIV) return 2;
+	if (type & TYPE_PLUS || type & TYPE_MINUS) return 2;
 	if (type & TYPE_CARET) return 3;
 	if (type & TYPE_FUNCTION) return 4;
 	return 0;
@@ -537,6 +542,9 @@ std::vector<Lexed> process(const std::vector<Lexed> &lexed) {
 	 *
 	 * <number> <lparen> ::= <number> "*" <lparen>
 	 * <number> <string> ::= <number> "*" <string>
+	 *
+	 * Identify unary minus vs subtraction
+	 * Identity unary plus vs addition
 	 */
 
 	std::vector<Lexed> tmp(lexed.begin(), lexed.end());
@@ -545,11 +553,27 @@ std::vector<Lexed> process(const std::vector<Lexed> &lexed) {
 	bool addParen = false;
 
 	for (int64_t i = 0; i < tmp.size() - 1; ++i) {
+		// Unary plus if first term or previous was <insert here>
+		if ((i == 0 || tmp[i - 1].type &
+						 (TYPE_ADD | TYPE_SUB | TYPE_MUL | TYPE_DIV |
+						  TYPE_CARET | TYPE_LPAREN | TYPE_PLUS | TYPE_MINUS)) &&
+			tmp[i].type & TYPE_ADD) {
+			tmp[i].type = TYPE_PLUS | TYPE_OPERATOR;
+		}
+
+		// Unary minus if first term or previous was <insert here>
+		if ((i == 0 || tmp[i - 1].type &
+						 (TYPE_ADD | TYPE_SUB | TYPE_MUL | TYPE_DIV |
+						  TYPE_CARET | TYPE_LPAREN | TYPE_PLUS | TYPE_MINUS)) &&
+			tmp[i].type & TYPE_SUB) {
+			tmp[i].type = TYPE_MINUS | TYPE_OPERATOR;
+		}
+
 		if (tmp[i].type & TYPE_NUMBER &&
 			tmp[i + 1].type & (TYPE_LPAREN | TYPE_STRING)) {
 			// <number> <lparen>
-			addParen = true;
-			res.emplace_back(Lexed {TYPE_LPAREN, "("});
+			// addParen = true;
+			// res.emplace_back(Lexed {TYPE_LPAREN, "("});
 			res.emplace_back(tmp[i]);
 			res.emplace_back(Lexed {TYPE_MUL | TYPE_OPERATOR, "*"});
 		} else if (tmp[i].type & TYPE_STRING && tmp[i + 1].type & TYPE_LPAREN) {
@@ -672,6 +696,8 @@ parse(const std::vector<Lexed> &postfix) {
 		} else if (lex.type & TYPE_OPERATOR) {
 			// Operators are just special functions
 			auto func = findFunction("_");
+			if (lex.type & TYPE_PLUS) func = findFunction("PLUS");
+			if (lex.type & TYPE_MINUS) func = findFunction("MINUS");
 			if (lex.type & TYPE_ADD) func = findFunction("ADD");
 			if (lex.type & TYPE_SUB) func = findFunction("SUB");
 			if (lex.type & TYPE_MUL) func = findFunction("MUL");
@@ -792,6 +818,48 @@ public:
 				return std::make_shared<Number>(0);
 		}
 		return nullptr;
+	}
+};
+
+// Differentiate unary PLUS or MINUS
+class DerivUnaryPlusMinus : public DerivativeRule {
+public:
+	DerivUnaryPlusMinus() : DerivativeRule() {}
+
+	LR_NODISCARD("")
+	bool applicable(const std::shared_ptr<Component> &component,
+					const std::string &wrt) const override {
+		std::string type = component->type();
+		if (type == "FUNCTION") {
+			auto func = std::dynamic_pointer_cast<Function>(component);
+			if (func->name() == "PLUS" || func->name() == "MINUS") return true;
+		}
+		return false;
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	derivative(const std::shared_ptr<Component> &component,
+			   const std::string &wrt) const override {
+		/*
+		 * d/dx (+a) = +(d/dx a)
+		 * d/dx (-a) = -(d/dx a)
+		 */
+
+		// Extract operands
+		auto op	  = std::dynamic_pointer_cast<Function>(component);
+		auto vals = op->values();
+		LR_ASSERT(vals.size() == 1, "Expected 1 operand");
+		std::shared_ptr<Component> lhs = differentiate(vals[0], wrt);
+
+		// Duplicate function
+		auto it = findFunction(op->name());
+		LR_ASSERT(it != functions.end(), "Function not found");
+
+		auto func = std::make_shared<Function>(**it);
+		func->addValue(lhs);
+
+		return func;
 	}
 };
 
@@ -1065,6 +1133,61 @@ public:
 	}
 };
 
+// Simplify unary plus
+class SimplifyPlus : public SimplificationRule {
+public:
+	SimplifyPlus() = default;
+
+	LR_NODISCARD("")
+	bool
+	applicable(const std::shared_ptr<Component> &component) const override {
+		return component->type() == "FUNCTION" && component->name() == "PLUS";
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	simplifyInput(const std::shared_ptr<Component> &component) const override {
+		auto func = std::dynamic_pointer_cast<Function>(component);
+		LR_ASSERT(func->numOperands() == 1, "Expected 1 operand");
+		auto left = simplify(func->values()[0]);
+
+		// +x = x
+		return left;
+	}
+};
+
+// Simplify unary MINUS
+class SimplifyMinus : public SimplificationRule {
+public:
+	SimplifyMinus() = default;
+
+	LR_NODISCARD("")
+	bool
+	applicable(const std::shared_ptr<Component> &component) const override {
+		return component->type() == "FUNCTION" && component->name() == "MINUS";
+	}
+
+	LR_NODISCARD("")
+	std::shared_ptr<Component>
+	simplifyInput(const std::shared_ptr<Component> &component) const override {
+		auto func = std::dynamic_pointer_cast<Function>(component);
+		LR_ASSERT(func->numOperands() == 1, "Expected 1 operand");
+		auto left = simplify(func->values()[0]);
+
+		// --x = x
+		if (left->type() == "FUNCTION" && left->name() == "MINUS") {
+			auto leftFunc = std::dynamic_pointer_cast<Function>(left);
+			LR_ASSERT(leftFunc->numOperands() == 1, "Expected 1 operand");
+			return simplify(leftFunc->values()[0]);
+		}
+
+		auto res = std::make_shared<Function>(*func);
+		res->clearValues();
+		res->addValue(left);
+		return res;
+	}
+};
+
 // Simplify addition
 class SimplifyAdd : public SimplificationRule {
 public:
@@ -1073,8 +1196,7 @@ public:
 	LR_NODISCARD("")
 	bool
 	applicable(const std::shared_ptr<Component> &component) const override {
-		return component->type() == "FUNCTION" &&
-			   (component->name() == "ADD" || component->name() == "SUB");
+		return component->type() == "FUNCTION" && component->name() == "ADD";
 	}
 
 	LR_NODISCARD("")
@@ -1115,8 +1237,7 @@ public:
 	LR_NODISCARD("")
 	bool
 	applicable(const std::shared_ptr<Component> &component) const override {
-		return component->type() == "FUNCTION" &&
-			   (component->name() == "ADD" || component->name() == "SUB");
+		return component->type() == "FUNCTION" && component->name() == "SUB";
 	}
 
 	LR_NODISCARD("")
@@ -1130,7 +1251,11 @@ public:
 		// 0 - x = -x
 		if (left->type() == "NUMBER") {
 			if (std::dynamic_pointer_cast<Number>(left)->value() == 0) {
-				return right;
+				auto minusIt = findFunction("MINUS");
+				LR_ASSERT(minusIt != functions.end(), "Function not found");
+				auto minus = std::make_shared<Function>(**minusIt);
+				minus->addValue(right);
+				return minus;
 			}
 		}
 
@@ -1385,10 +1510,10 @@ int main() {
 	registerConstants();
 	registerSimplifications();
 
-	std::string equation("0 - 1");
+	std::string equation("5x^2 + 3x + 2");
+
 	std::map<std::string, std::shared_ptr<Component>> variables = {
-	  std::make_pair("x", autoParse("123")),
-	  std::make_pair("b", autoParse("2 + 4"))};
+	  std::make_pair("x", autoParse("5"))};
 
 	auto tree	= autoParse(equation);
 	auto subbed = substitute(tree, variables);
@@ -1400,22 +1525,20 @@ int main() {
 	fmt::print("\nDerivative: {}\n", prettyPrint(diff));
 	fmt::print("Simplified: {}\n\n", prettyPrint(simplify(diff)));
 
-	fmt::print("{}\n\n\n", tree->str(0));
-	fmt::print("{}\n\n\n", subbed->str(0));
-	fmt::print("{}\n", diff->str(0));
-	auto txt = prettyPrint(subbed);
-	fmt::print("Pretty print: {}\n", txt);
+	// fmt::print("{}\n\n\n", tree->str(0));
+	// fmt::print("{}\n\n\n", subbed->str(0));
+	// fmt::print("{}\n", diff->str(0));
 	fmt::print("Numeric result: {}\n", lrc::str(eval(subbed)));
 
-	{
-		auto help = autoParse("1/x");
-		for (int i = 0; i < 3; ++i) {
-			// fmt::print("{}\n", prettyPrint(help));
-			help = simplify(differentiate(help));
-		}
-
-		fmt::print("{}\n", prettyPrint(help));
-	}
+	//	{
+	//		auto help = autoParse("1/x");
+	//		for (int i = 0; i < 3; ++i) {
+	//			// fmt::print("{}\n", prettyPrint(help));
+	//			help = simplify(differentiate(help));
+	//		}
+	//
+	//		fmt::print("{}\n", prettyPrint(help));
+	//	}
 
 	return 0;
 }

@@ -1502,6 +1502,113 @@ std::shared_ptr<Component> simplify(const std::shared_ptr<Component> &input) {
 	return current;
 }
 
+// More helper functions
+std::shared_ptr<Component> add(const std::shared_ptr<Component> &left,
+							   const std::shared_ptr<Component> &right) {
+	auto addOp = findFunction("ADD");
+	LR_ASSERT(addOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**addOp);
+	func->addValue(left);
+	func->addValue(right);
+	return func;
+}
+
+std::shared_ptr<Component> sub(const std::shared_ptr<Component> &left,
+							   const std::shared_ptr<Component> &right) {
+	auto subOp = findFunction("SUB");
+	LR_ASSERT(subOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**subOp);
+	func->addValue(left);
+	func->addValue(right);
+	return func;
+}
+
+std::shared_ptr<Component> mul(const std::shared_ptr<Component> &left,
+							   const std::shared_ptr<Component> &right) {
+	auto mulOp = findFunction("MUL");
+	LR_ASSERT(mulOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**mulOp);
+	func->addValue(left);
+	func->addValue(right);
+	return func;
+}
+
+std::shared_ptr<Component> div(const std::shared_ptr<Component> &left,
+							   const std::shared_ptr<Component> &right) {
+	auto divOp = findFunction("DIV");
+	LR_ASSERT(divOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**divOp);
+	func->addValue(left);
+	func->addValue(right);
+	return func;
+}
+
+std::shared_ptr<Component> pow(const std::shared_ptr<Component> &left,
+							   const std::shared_ptr<Component> &right) {
+	auto powOp = findFunction("POW");
+	LR_ASSERT(powOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**powOp);
+	func->addValue(left);
+	func->addValue(right);
+	return func;
+}
+
+std::shared_ptr<Component> minus(const std::shared_ptr<Component> &input) {
+	auto negOp = findFunction("MINUS");
+	LR_ASSERT(negOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**negOp);
+	func->addValue(input);
+	return func;
+}
+
+std::shared_ptr<Component> sin(const std::shared_ptr<Component> &input) {
+	auto sinOp = findFunction("sin");
+	LR_ASSERT(sinOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**sinOp);
+	func->addValue(input);
+	return func;
+}
+
+std::shared_ptr<Component> cos(const std::shared_ptr<Component> &input) {
+	auto cosOp = findFunction("cos");
+	LR_ASSERT(cosOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**cosOp);
+	func->addValue(input);
+	return func;
+}
+
+std::shared_ptr<Component> tan(const std::shared_ptr<Component> &input) {
+	auto tanOp = findFunction("tan");
+	LR_ASSERT(tanOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**tanOp);
+	func->addValue(input);
+	return func;
+}
+
+std::shared_ptr<Component> asin(const std::shared_ptr<Component> &input) {
+	auto asinOp = findFunction("asin");
+	LR_ASSERT(asinOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**asinOp);
+	func->addValue(input);
+	return func;
+}
+
+std::shared_ptr<Component> acos(const std::shared_ptr<Component> &input) {
+	auto acosOp = findFunction("acos");
+	LR_ASSERT(acosOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**acosOp);
+	func->addValue(input);
+	return func;
+}
+
+std::shared_ptr<Component> atan(const std::shared_ptr<Component> &input) {
+	auto atanOp = findFunction("atan");
+	LR_ASSERT(atanOp != functions.end(), "Could not locate function");
+	auto func = std::make_shared<Function>(**atanOp);
+	func->addValue(input);
+	return func;
+}
+
 int main() {
 	lrc::prec(1000);
 
@@ -1510,6 +1617,7 @@ int main() {
 	registerConstants();
 	registerSimplifications();
 
+	/*
 	std::string equation("1/x");
 
 	std::map<std::string, std::shared_ptr<Component>> variables = {
@@ -1555,12 +1663,28 @@ int main() {
 
 		fmt::print("Evaluating\n");
 		lrc::timeVerbose(
-		  [&]() { auto res = eval(substitute(parsed, vars)); }, -1, -1, 10);
+		  [&]() { auto res = eval(substitute(parsed, vars)); }, -1, -1, 1);
 
-		fmt::print("{}\n", prettyPrint(parsed));
-		fmt::print("{}\n", prettyPrint(differentiated));
-		fmt::print("{}\n", prettyPrint(simplify(differentiated)));
+		fmt::print("{}\n\n", prettyPrint(parsed));
+		fmt::print("{}\n\n", prettyPrint(differentiated));
+		fmt::print("{}\n\n", prettyPrint(simplify(differentiated)));
 	}
+	 */
+
+	std::string eqn = "3x^2 - 5x + 2";
+
+	auto parsed = autoParse(eqn);
+	fmt::print("Equation: {}\n", prettyPrint(parsed));
+	fmt::print("Derivative: {}\n", prettyPrint(simplify(differentiate(parsed))));
+	fmt::print("Tree: \n{}\n", parsed->str(0));
+	std::map<std::string, std::shared_ptr<Component>> vars = {
+	  {std::pair(
+		"e",
+		autoParse("2.71828182845904523536028747135266249775724709369995"))},
+	  {std::pair("x", autoParse("5"))}
+	};
+	auto substituted = substitute(parsed, vars);
+	fmt::print("Evaluated: {}\n", eval(substituted));
 
 	return 0;
 }
